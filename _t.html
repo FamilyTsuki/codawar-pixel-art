@@ -1,0 +1,11 @@
+<!doctype html><meta charset="utf-8"><body style="margin:0"><iframe id="f" src="/" style="border:0;width:1440px;height:900px"></iframe>
+<script>
+const f=document.getElementById('f');
+f.onload=()=>setTimeout(async()=>{
+  const w=f.contentWindow;
+  await w.fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'vis1795214801',password:'motdepasse1'})});
+  await w.fetch('/api/account',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cookie:'codawar_session=_AdpRjrT3QXUwYxtUdaweUbSYBjLZky0-ncp7hACC2M',canvas:'playtest-sandbox'})});
+  w.location.reload();
+  setTimeout(()=>{ try{ f.contentWindow.openText(); }catch(e){} document.title='ok'; }, 4000);
+},800);
+</script>

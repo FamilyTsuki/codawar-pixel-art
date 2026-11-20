@@ -22,6 +22,10 @@ services:
       - COOKIE_SECURE=1
       - AUTH_PEPPER=${AUTH_PEPPER:?definir AUTH_PEPPER dans .env}
       - SESSION_TTL_DAYS=30
+      # mise à jour auto depuis la branche main (le dépôt monté doit pouvoir faire git fetch)
+      - AUTO_PULL=1
+      - AUTO_PULL_INTERVAL=300
+      - AUTO_PULL_BRANCH=main
     ports:
       - "0.0.0.0:5055:5055/tcp"    # Cosmos peut aussi exposer via une Route plutôt que ce port
     depends_on:

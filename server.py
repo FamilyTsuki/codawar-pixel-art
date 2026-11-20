@@ -60,9 +60,43 @@ import json
 import random
 import re
 import secrets
+import subprocess
 import threading
 import time
 import urllib.parse
+
+
+# ---------------------------------------------------------------- Mise à jour auto (git pull main)
+
+AUTO_PULL = os.environ.get("AUTO_PULL", "0") == "1"
+AUTO_PULL_INTERVAL = int(os.environ.get("AUTO_PULL_INTERVAL", "300"))  # secondes
+AUTO_PULL_BRANCH = os.environ.get("AUTO_PULL_BRANCH", "main")
+
+
+def _git(*args):
+    return subprocess.run(["git", "-C", BASE, "-c", f"safe.directory={BASE}", *args],
+                          capture_output=True, text=True, timeout=120)
+
+
+def auto_pull_loop(on_update):
+    while True:
+        time.sleep(AUTO_PULL_INTERVAL)
+        try:
+            if _git("fetch", "origin", AUTO_PULL_BRANCH).returncode != 0:
+                continue
+            local = _git("rev-parse", "HEAD").stdout.strip()
+            remote = _git("rev-parse", f"origin/{AUTO_PULL_BRANCH}").stdout.strip()
+            if not remote or local == remote:
+                continue
+            pull = _git("merge", "--ff-only", f"origin/{AUTO_PULL_BRANCH}")
+            if pull.returncode != 0:
+                print(f"auto-pull: fusion impossible (changements locaux ?) : {pull.stderr.strip()}", flush=True)
+                continue
+            print(f"auto-pull: mis à jour {local[:7]} -> {remote[:7]}, redémarrage", flush=True)
+            on_update()
+            os.execv(sys.executable, [sys.executable, *sys.argv])  # recharge le nouveau code
+        except Exception as e:
+            print(f"auto-pull: {e}", flush=True)
 
 
 # ---------------------------------------------------------------- Sécurité
@@ -1135,6 +1169,9 @@ def main():
         threading.Thread(target=engine.worker, args=(i,), daemon=True).start()
     threading.Thread(target=engine.guard_loop, daemon=True).start()
     threading.Thread(target=engine.persist_loop, daemon=True).start()
+    if AUTO_PULL:
+        threading.Thread(target=auto_pull_loop, args=(engine.persist,), daemon=True).start()
+        print(f"Mise à jour auto : branche {AUTO_PULL_BRANCH} toutes les {AUTO_PULL_INTERVAL}s", flush=True)
     http.server.ThreadingHTTPServer.allow_reuse_address = True
     httpd = http.server.ThreadingHTTPServer((HOST, PORT), Handler)
     httpd.daemon_threads = True
