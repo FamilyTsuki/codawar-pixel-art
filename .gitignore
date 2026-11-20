@@ -1,0 +1,14 @@
+# Secrets & environnement
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+
+# Données & tests
+data/
+_test*

@@ -1,0 +1,39 @@
+# Pile Codawar Pixel Studio pour Cosmos Cloud (Raspberry Pi 4).
+# L'app tourne 24/24, redémarre toute seule, et garde ses données dans PostgreSQL.
+services:
+  codawar-studio:
+    container_name: codawar-studio
+    build: .                       # construit l'image depuis le Dockerfile de ce dossier
+    restart: unless-stopped
+    environment:
+      - HOST=0.0.0.0
+      - PORT=5055
+      # connexion à la base (service codawar-db ci-dessous)
+      - CODAWAR_PG=host=codawar-db dbname=${POSTGRES_DB:-codawar} user=${POSTGRES_USER:-codawar} password=${POSTGRES_PASSWORD:-change-moi}
+      # TON cookie de session Codawar (à renouveler quand il expire)
+      - CODAWAR_COOKIE=${CODAWAR_COOKIE:-}
+    ports:
+      - "0.0.0.0:5055:5055/tcp"    # Cosmos peut aussi exposer via une Route plutôt que ce port
+    depends_on:
+      - codawar-db
+    networks:
+      - codawar-net
+
+  codawar-db:
+    container_name: codawar-db
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=codawar
+      - POSTGRES_PASSWORD=change-moi
+      - POSTGRES_DB=codawar
+    volumes:
+      - codawar-pgdata:/var/lib/postgresql/data
+    networks:
+      - codawar-net
+
+volumes:
+  codawar-pgdata:
+
+networks:
+  codawar-net:
