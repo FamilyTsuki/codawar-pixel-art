@@ -51,10 +51,12 @@ except ModuleNotFoundError:
         os.execv(_venv_py, [_venv_py, *sys.argv])
     HAS_PG = False  # ni venv ni psycopg : repli sur le fichier JSON
 
+import base64
 import collections
 import hashlib
 import hmac
 import http.client
+import zlib
 import http.server
 import json
 import random
@@ -135,6 +137,9 @@ DEFAULT_COOKIE = os.environ.get("CODAWAR_COOKIE", "")
 DEFAULT_CANVAS = "playtest-sandbox"
 ZONE_SIZE = 100
 MAX_WORKERS = 16
+STATS_INTERVAL = int(os.environ.get("STATS_INTERVAL", "15"))     # relecture pour construire les stats 24/24
+SNAPSHOT_INTERVAL = int(os.environ.get("SNAPSHOT_INTERVAL", "300"))  # instantané du canvas pour le timelapse
+SNAPSHOT_KEEP = int(os.environ.get("SNAPSHOT_KEEP", "3000"))     # nb max d'instantanés gardés par canvas
 
 # Table d'index des couleurs de onSynchronizeCanvas (cells[i+2]), reconstruite depuis le bundle JS du site :
 # ["#ffffff", ...anciennes couleurs (15), ...palette posable (32) sans #ffffff]
@@ -145,6 +150,7 @@ PLACEABLE_COLORS = ["#6d001a", "#be0039", "#ff4500", "#ffa800", "#ffd635", "#fff
                     "#6a5cff", "#94b3ff", "#811e9f", "#b44ac0", "#e4abff", "#de107f", "#ff3881", "#ff99aa",
                     "#6d482f", "#9c6926", "#ffb470", "#000000", "#515252", "#898d90", "#d4d7d9", "#ffffff"]
 COLOR_INDEX = ["#ffffff"] + LEGACY_COLORS + [c for c in PLACEABLE_COLORS if c != "#ffffff"]
+COLOR_POS = {h: i for i, h in enumerate(COLOR_INDEX)}  # hex -> index (pour empaqueter un instantané)
 CELL_STRIDE = 6  # [col, row, colorIdx, ownerIdx, protection, revision]
 
 # Codes de rejet qui signifient "réessayer plus tard" (solde, limite, fermeture…)
@@ -270,6 +276,10 @@ CREATE TABLE IF NOT EXISTS users (
   id text PRIMARY KEY, username text UNIQUE NOT NULL, pw text NOT NULL,
   cookie text NOT NULL DEFAULT '', canvas text NOT NULL DEFAULT 'playtest-sandbox', prefs jsonb NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS sessions (token text PRIMARY KEY, uid text NOT NULL, created double precision NOT NULL);
+CREATE TABLE IF NOT EXISTS snapshots (
+  id bigserial PRIMARY KEY, canvas text NOT NULL, t double precision NOT NULL,
+  w int NOT NULL, h int NOT NULL, data text NOT NULL);
+CREATE INDEX IF NOT EXISTS snapshots_canvas_t ON snapshots (canvas, t);
 """
 
 
@@ -476,6 +486,48 @@ class Store:
             if self.sessions.pop(token, None) is not None:
                 self.save()
 
+    # -- instantanés du canvas (timelapse), stockés en PostgreSQL
+    def add_snapshot(self, canvas, t, w, h, data):
+        if not self.pg:
+            return
+        with self.lock:
+            self._ensure_pg()
+            try:
+                with self.pg.cursor() as cur:
+                    cur.execute("INSERT INTO snapshots(canvas, t, w, h, data) VALUES (%s,%s,%s,%s,%s)",
+                                (canvas, t, w, h, data))
+                    cur.execute("DELETE FROM snapshots WHERE canvas=%s AND id NOT IN "
+                                "(SELECT id FROM snapshots WHERE canvas=%s ORDER BY t DESC LIMIT %s)",
+                                (canvas, canvas, SNAPSHOT_KEEP))
+            except Exception as e:
+                print(f"snapshot PostgreSQL : {e}", flush=True)
+                self.pg = None
+
+    def list_snapshots(self, canvas):
+        if not self.pg:
+            return []
+        with self.lock:
+            self._ensure_pg()
+            try:
+                with self.pg.cursor() as cur:
+                    cur.execute("SELECT id, t FROM snapshots WHERE canvas=%s ORDER BY t", (canvas,))
+                    return [{"id": i, "t": tt} for i, tt in cur.fetchall()]
+            except Exception:
+                return []
+
+    def get_snapshot(self, sid):
+        if not self.pg:
+            return None
+        with self.lock:
+            self._ensure_pg()
+            try:
+                with self.pg.cursor() as cur:
+                    cur.execute("SELECT canvas, t, w, h, data FROM snapshots WHERE id=%s", (sid,))
+                    r = cur.fetchone()
+                    return {"canvas": r[0], "t": r[1], "w": r[2], "h": r[3], "data": r[4]} if r else None
+            except Exception:
+                return None
+
     @staticmethod
     def _replace(cur, table, items):
         ids = [it["id"] for it in items]
@@ -554,13 +606,22 @@ class Engine:
         self.errors = rt.get("errors", 0)
         self.stats = rt.get("stats", {})
         self.logs = collections.deque(rt.get("logs", []), maxlen=300)
+        # carte de chaleur : canvas -> {"c,r": nb de changements} (restaurée depuis un blob compressé)
+        self.heat = {}
+        for cv, blob in (rt.get("heat") or {}).items():
+            try:
+                self.heat[cv] = json.loads(zlib.decompress(base64.b64decode(blob)).decode())
+            except Exception:
+                pass
         self._rt_dirty = False
 
     def persist(self):
         """Sauvegarde l'état d'exécution (compteurs, stats, journal)."""
         with self.lock:
+            heat = {cv: base64.b64encode(zlib.compress(json.dumps(h).encode())).decode()
+                    for cv, h in self.heat.items() if h}
             data = {"placed": self.placed, "skipped": self.skipped, "errors": self.errors,
-                    "stats": self.stats, "logs": list(self.logs)}
+                    "stats": self.stats, "logs": list(self.logs), "heat": heat}
         self.store.save_runtime(data)
         self._rt_dirty = False
 
@@ -624,25 +685,44 @@ class Engine:
             if prev is None:  # première relecture : juste une base de comparaison
                 self.stats_last[canvas] = now
                 return
+            hour = time.localtime(now).tm_hour
             placers = collections.Counter()
+            colors = collections.defaultdict(collections.Counter)  # owner -> {hex: n}
+            heat = self.heat.setdefault(canvas, {})
             for k, rev in cur.items():
                 old = prev.get(k)
                 if old is None or rev > old:  # case nouvellement peinte ou repeinte
-                    placers[b["pixels"][k][1] or "?"] += 1
+                    owner = b["pixels"][k][1] or "?"
+                    placers[owner] += 1
+                    colors[owner][b["pixels"][k][0]] += 1
+                    hk = f"{k[0]},{k[1]}"             # carte de chaleur : +1 par changement sur la case
+                    heat[hk] = heat.get(hk, 0) + 1
             dt = max(0.001, now - self.stats_last.get(canvas, now))
             self.stats_last[canvas] = now
             st = self.stats.setdefault(canvas, {})
             for owner, k in placers.items():
-                s = st.setdefault(owner, {"observed": 0, "first": now, "last": now, "maxRate": 0.0})
+                s = st.setdefault(owner, {"observed": 0, "first": now, "last": now, "maxRate": 0.0,
+                                          "colors": {}, "hours": [0] * 24})
+                s.setdefault("colors", {})
+                s.setdefault("hours", [0] * 24)
                 s["observed"] += k
                 s["last"] = now
-                s["maxRate"] = max(s["maxRate"], k / dt)  # rafale la plus rapide (pixels/s)
+                s["maxRate"] = max(s["maxRate"], k / dt)
+                s["hours"][hour] += k
+                for hx, n in colors[owner].items():
+                    s["colors"][hx] = s["colors"].get(hx, 0) + n
 
     def stats_for(self, canvas, me="moi"):
         b = self.boards.get(canvas)
-        owned = collections.Counter((me if (v[1] == "(vous)") else (v[1] or "?")) for v in b["pixels"].values()) if b else collections.Counter()
+        now = time.time()
+        owned = collections.Counter()
+        owned_colors = collections.Counter()
+        if b:
+            for v in b["pixels"].values():
+                owned[me if v[1] == "(vous)" else (v[1] or "?")] += 1
+                owned_colors[v[0]] += 1
         with self.lock:
-            st = dict(self.stats.get(canvas, {}))
+            st = {k: dict(v) for k, v in self.stats.get(canvas, {}).items()}
         rows = []
         names = set(owned) | set(st)
         for name in names:
@@ -650,16 +730,74 @@ class Engine:
             obs = s.get("observed", 0)
             span = max(0.001, s.get("last", 0) - s.get("first", 0))
             mx = s.get("maxRate", 0.0)
+            cols = s.get("colors", {})
+            top = max(cols, key=cols.get) if cols else None
             rows.append({
                 "name": name,
                 "owned": owned.get(name, 0),
                 "observed": obs,
-                "fastestGap": round(1 / mx, 2) if mx > 0 else None,   # s entre 2 poses, au plus rapide
+                "fastestGap": round(1 / mx, 2) if mx > 0 else None,
                 "perMin": round(obs / span * 60, 1) if obs > 1 and span > 1 else None,
                 "avgGap": round(span / obs, 1) if obs > 1 else None,
+                "lastSeen": round(now - s["last"]) if s.get("last") else None,  # secondes depuis sa dernière pose vue
+                "topColor": top,
+                "nColors": len(cols),
             })
         rows.sort(key=lambda r: (-r["owned"], -r["observed"]))
-        return rows
+        # résumé du canvas
+        total = b["w"] * b["h"] if b else 0
+        painted = len(b["pixels"]) if b else 0
+        summary = {
+            "painted": painted,
+            "total": total,
+            "coverage": round(painted / total * 100, 1) if total else 0,
+            "players": len([r for r in rows if r["owned"] > 0 or r["observed"] > 0]),
+            "byColor": owned_colors.most_common(12),
+            "observedTotal": sum(r["observed"] for r in rows),
+        }
+        return rows, summary
+
+    # -- instantanés du canvas pour le timelapse (24/24)
+    def snapshot_loop(self):
+        last = {}
+        while True:
+            time.sleep(min(SNAPSHOT_INTERVAL, 30))
+            now = time.time()
+            for canvas, b in list(self.boards.items()):
+                if now - last.get(canvas, 0) < SNAPSHOT_INTERVAL:
+                    continue
+                last[canvas] = now
+                try:
+                    self.save_snapshot(canvas, b)
+                except Exception as e:
+                    print(f"snapshot: {e}", flush=True)
+
+    def save_snapshot(self, canvas, b):
+        w, h = b["w"], b["h"]
+        grid = bytearray(w * h)  # 1 octet = index couleur ; 0 = blanc/vide
+        for (c, r), v in b["pixels"].items():
+            if 0 <= c < w and 0 <= r < h:
+                grid[r * w + c] = COLOR_POS.get(v[0], 0) & 0xFF
+        data = base64.b64encode(zlib.compress(bytes(grid), 6)).decode()
+        self.store.add_snapshot(canvas, b["t"], w, h, data)
+
+    # -- construction des stats 24/24 (indépendant de l'interface ouverte)
+    def stats_loop(self):
+        while True:
+            time.sleep(STATS_INTERVAL)
+            try:
+                canvases = set(self.boards.keys())
+                with self.store.lock:
+                    canvases |= {u.get("canvas") for u in self.store.users.values() if u.get("cookie") and u.get("canvas")}
+                    canvases |= {l.get("canvas") for l in self.store.layers}
+                ck = self.any_cookie()
+                if not ck:
+                    continue
+                for cv in canvases:
+                    if cv:
+                        self.fetch_board(cv, max_age=STATS_INTERVAL - 1, cookie=ck)
+            except Exception as e:
+                print(f"stats_loop: {e}", flush=True)
 
     # -- cookie Codawar à utiliser (par compte)
     def any_cookie(self):
@@ -1009,7 +1147,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path.startswith("/api/stats"):
             canvas = self._my_canvas(u, self.path.partition("canvas=")[2] or None)
             engine.fetch_board(canvas, max_age=3, cookie=ck)
-            return self._json({"rows": engine.stats_for(canvas, nick_of(ck) or u["username"]), "me": nick_of(ck) or u["username"]})
+            me = nick_of(ck) or u["username"]
+            rows, summary = engine.stats_for(canvas, me)
+            return self._json({"rows": rows, "summary": summary, "me": me})
+        if self.path.startswith("/api/heatmap"):
+            canvas = self._my_canvas(u, self.path.partition("canvas=")[2] or None)
+            b = engine.fetch_board(canvas, max_age=10, cookie=ck)
+            heat = engine.heat.get(canvas, {})
+            cells = [[*map(int, k.split(",")), n] for k, n in heat.items()]
+            return self._json({"w": b["w"] if b else 100, "h": b["h"] if b else 100,
+                               "cells": cells, "max": max((n for *_, n in cells), default=0)})
+        if self.path.startswith("/api/timelapse/frame"):
+            sid = self.path.partition("id=")[2].partition("&")[0]
+            snap = store.get_snapshot(int(sid)) if sid.isdigit() else None
+            if not snap:
+                return self._json({"success": False}, 404)
+            grid = zlib.decompress(base64.b64decode(snap["data"]))  # 1 octet = index couleur
+            return self._json({"w": snap["w"], "h": snap["h"], "t": snap["t"],
+                               "palette": COLOR_INDEX, "idx": list(grid)})
+        if self.path.startswith("/api/timelapse"):
+            canvas = self._my_canvas(u, self.path.partition("canvas=")[2] or None)
+            return self._json({"frames": store.list_snapshots(canvas), "palette": COLOR_INDEX})
         return self._json({"success": False}, 404)
 
     def do_POST(self):
@@ -1169,6 +1327,8 @@ def main():
         threading.Thread(target=engine.worker, args=(i,), daemon=True).start()
     threading.Thread(target=engine.guard_loop, daemon=True).start()
     threading.Thread(target=engine.persist_loop, daemon=True).start()
+    threading.Thread(target=engine.stats_loop, daemon=True).start()
+    threading.Thread(target=engine.snapshot_loop, daemon=True).start()
     if AUTO_PULL:
         threading.Thread(target=auto_pull_loop, args=(engine.persist,), daemon=True).start()
         print(f"Mise à jour auto : branche {AUTO_PULL_BRANCH} toutes les {AUTO_PULL_INTERVAL}s", flush=True)
