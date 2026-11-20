@@ -114,10 +114,29 @@
   .hint { color:var(--mute); font-size:11px; }
   #toast { position:absolute; left:50%; bottom:14px; transform:translateX(-50%); background:#000c; padding:6px 12px; border-radius:6px; pointer-events:none; opacity:0; transition:opacity .2s; }
   #toast.show { opacity:1; }
+  #auth { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:var(--bg); z-index:50; padding:20px; }
+  #authCard { width:min(360px,100%); background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:26px 24px; display:flex; flex-direction:column; gap:12px; }
+  #authCard h1 { font-size:18px; margin:0 0 4px; }
+  #authCard label { display:flex; flex-direction:column; gap:6px; color:var(--mute); font-size:13px; }
+  #authCard input { font-size:15px; padding:9px 11px; }
+  .auth-tabs { display:flex; gap:6px; }
+  .auth-tabs button { flex:1; }
+  .auth-err { color:var(--err); font-size:13px; min-height:16px; }
 </style>
 </head>
 <body>
-<div id="app">
+<div id="auth" hidden>
+  <form id="authCard" autocomplete="on">
+    <h1>Codawar Pixel Studio</h1>
+    <div class="auth-tabs"><button type="button" id="aLogin" class="on">Connexion</button><button type="button" id="aRegister">Créer un compte</button></div>
+    <label>Pseudo<input id="aUser" autocomplete="username" required></label>
+    <label>Mot de passe<input id="aPass" type="password" autocomplete="current-password" required></label>
+    <button type="submit" id="aSubmit" class="cta">Se connecter</button>
+    <div id="aErr" class="auth-err"></div>
+    <div class="hint" style="margin-top:4px">Chaque compte a son propre cookie Codawar, réglé après connexion.</div>
+  </form>
+</div>
+<div id="app" hidden>
   <header>
     <h1>Codawar Pixel Studio</h1>
     <select id="canvasName" style="min-width:190px" title="Canvas"></select>
@@ -129,6 +148,8 @@
     <span class="chip">solde <b id="hWallet">–</b></span>
     <button id="btnPause">Pause</button>
     <button id="btnClear" class="danger" title="Vider la file d'attente">Vider la file</button>
+    <span id="hUser" class="chip" style="margin-left:4px"></span>
+    <button id="btnLogout" title="Se déconnecter">Déconnexion</button>
   </header>
 
   <nav id="topnav">
@@ -1338,18 +1359,20 @@ async function loadServerState() {
   const r = await fetch('/api/layers').then(r => r.json());
   S.layers = r.layers; const s = r.settings;
   $('sWorkers').value = s.workers; $('sDelay').value = s.delay; $('sGuard').value = s.guardInterval; $('sOrder').value = s.order;
-  $('sCookie').value = s.cookie; S.statusOrder = s.order;
+  $('sCookie').value = r.cookie || ''; S.statusOrder = s.order;
   $('sSchedOn').checked = !!s.scheduleOn; $('sSchedFrom').value = s.scheduleFrom || '00:00'; $('sSchedTo').value = s.scheduleTo || '23:59';
   $('sVandal').value = s.vandalThreshold ?? 12;
   $('sBackend').textContent = r.backend === 'postgres' ? 'PostgreSQL' : 'fichier JSON (PostgreSQL pas encore configuré)';
   loadSprites();
-  let c = s.canvas; try { c = localStorage.getItem('canvas') || c; } catch {}
+  let c = r.canvas || s.canvas; try { c = localStorage.getItem('canvas') || c; } catch {}
   S.canvas = c; await loadCanvasList();
   setCanvas(c);
 }
 $('btnSaveSettings').onclick = async () => {
-  await post('/api/settings', { workers: +$('sWorkers').value, delay: +$('sDelay').value, guardInterval: +$('sGuard').value, order: $('sOrder').value, cookie: $('sCookie').value.trim(), canvas: S.canvas,
+  await post('/api/settings', { workers: +$('sWorkers').value, delay: +$('sDelay').value, guardInterval: +$('sGuard').value, order: $('sOrder').value,
     scheduleOn: $('sSchedOn').checked, scheduleFrom: $('sSchedFrom').value || '00:00', scheduleTo: $('sSchedTo').value || '23:59', vandalThreshold: +$('sVandal').value || 12 });
+  // le cookie Codawar et le canvas par défaut sont attachés au compte
+  await post('/api/account', { cookie: $('sCookie').value.trim(), canvas: S.canvas });
   S.statusOrder = $('sOrder').value;
   $('sSaved').textContent = 'enregistré'; setTimeout(() => $('sSaved').textContent = '', 1500);
 };
@@ -1381,6 +1404,7 @@ $('btnClear').onclick = () => { post('/api/queue/clear'); S.pending = []; draw()
 async function pollStatus() {
   try {
     const s = await fetch('/api/status?canvas=' + encodeURIComponent(S.canvas)).then(r => r.json());
+    if (s.auth === false) { showAuth(); return; }   // session expirée
     S.status = s; S.pending = s.pending;
     $('hQueue').textContent = s.queue + (s.inflight ? ` (+${s.inflight})` : '');
     $('hRate').textContent = s.rate;
@@ -1411,6 +1435,7 @@ async function pollStats() {
   try {
     if (document.querySelector('.tab[data-tab="stats"]').classList.contains('sel')) {
       const r = await fetch('/api/stats?canvas=' + encodeURIComponent(S.canvas)).then(r => r.json());
+      if (!r.rows) return;
       const fmt = v => v == null ? '—' : v;
       $('statsTable').querySelector('tbody').innerHTML = r.rows.map(x =>
         `<tr class="${x.name === r.me ? 'me' : ''}">
@@ -1426,16 +1451,50 @@ async function pollStats() {
   setTimeout(pollStats, 2000);
 }
 
+// ------------------------------------------------------------------ Authentification
+let authMode = 'login', appStarted = false;
+function showAuth() { $('auth').hidden = false; $('app').hidden = true; setTimeout(() => $('aUser').focus(), 0); }
+function setAuthMode(m) {
+  authMode = m;
+  $('aLogin').classList.toggle('on', m === 'login'); $('aRegister').classList.toggle('on', m === 'register');
+  $('aSubmit').textContent = m === 'login' ? 'Se connecter' : 'Créer le compte';
+  $('aPass').autocomplete = m === 'login' ? 'current-password' : 'new-password';
+  $('aErr').textContent = '';
+}
+$('aLogin').onclick = () => setAuthMode('login');
+$('aRegister').onclick = () => setAuthMode('register');
+$('authCard').onsubmit = async e => {
+  e.preventDefault();
+  const un = $('aUser').value.trim(), pw = $('aPass').value;
+  $('aErr').textContent = '';
+  const r = await post('/api/' + (authMode === 'login' ? 'login' : 'register'), { username: un, password: pw });
+  if (!r.success) { $('aErr').textContent = r.message || 'erreur'; return; }
+  $('auth').hidden = true; $('app').hidden = false; $('hUser').textContent = r.username;
+  startApp();
+};
+$('btnLogout').onclick = async () => { await post('/api/logout'); location.reload(); };
+
+function startApp() {
+  if (appStarted) { requestAnimationFrame(resize); return; }
+  appStarted = true;
+  buildPalette(); buildTextPalette();
+  setColor(getPref('color', '#000000'));
+  setTool(getPref('tool', 'paint'));
+  setTarget(getPref('target', 'direct'));
+  S.grid = getPref('grid', '1') === '1'; $('btnGrid').classList.toggle('on', S.grid);
+  new ResizeObserver(resize).observe(scr);
+  loadServerState().then(() => { pollStatus(); pollBoard(); pollStats(); });
+}
+
 // ------------------------------------------------------------------ Démarrage
 $('toolText').onclick = openText;
 $('btnUndo').onclick = undo;
-buildPalette(); buildTextPalette();
-setColor(getPref('color', '#000000'));
-setTool(getPref('tool', 'paint'));
-setTarget(getPref('target', 'direct'));
-S.grid = getPref('grid', '1') === '1'; $('btnGrid').classList.toggle('on', S.grid);
-new ResizeObserver(resize).observe(scr);
-loadServerState().then(() => { pollStatus(); pollBoard(); pollStats(); });
+(async () => {
+  let me = { auth: false };
+  try { me = await fetch('/api/me').then(r => r.json()); } catch {}
+  if (me.auth) { $('auth').hidden = true; $('app').hidden = false; $('hUser').textContent = me.username; startApp(); }
+  else { setAuthMode('login'); showAuth(); }
+})();
 </script>
 </body>
 </html>

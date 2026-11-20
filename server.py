@@ -52,13 +52,42 @@ except ModuleNotFoundError:
     HAS_PG = False  # ni venv ni psycopg : repli sur le fichier JSON
 
 import collections
+import hashlib
+import hmac
 import http.client
 import http.server
 import json
 import random
 import re
+import secrets
 import threading
 import time
+import urllib.parse
+
+
+# ---------------------------------------------------------------- Sécurité
+
+PEPPER = os.environ.get("AUTH_PEPPER", "").encode()      # secret serveur ajouté au mot de passe (optionnel mais recommandé)
+COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "0") == "1"  # 1 derrière HTTPS (Cosmos)
+SESSION_TTL = int(os.environ.get("SESSION_TTL_DAYS", "30")) * 86400
+PBKDF2_ROUNDS = 200_000
+MAX_BODY = 20 * 1024 * 1024  # 20 Mo par requête
+MIN_PW = 8
+
+
+def hash_pw(pw, salt=None):
+    salt = salt or secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac("sha256", pw.encode() + PEPPER, bytes.fromhex(salt), PBKDF2_ROUNDS).hex()
+    return f"{salt}${dk}"
+
+
+def check_pw(pw, stored):
+    try:
+        salt, dk = stored.split("$")
+        calc = hashlib.pbkdf2_hmac("sha256", pw.encode() + PEPPER, bytes.fromhex(salt), PBKDF2_ROUNDS).hex()
+        return hmac.compare_digest(dk, calc)
+    except Exception:
+        return False
 
 PORT = int(os.environ.get("PORT", "5055"))
 HOST = os.environ.get("HOST", "127.0.0.1")  # mettre 0.0.0.0 en conteneur (derrière Cosmos)
@@ -161,7 +190,15 @@ def telefunc(name, args, cookie, canvas, timeout=15):
 
 
 _canvases_cache = {"t": 0, "list": None}
-_player = {"name": None}  # pseudo du compte courant, pour ne pas prendre ses propres pixels pour une attaque
+_nick = {}  # cookie -> pseudo Codawar, pour ne pas prendre les pixels de nos comptes pour une attaque
+
+
+def our_names():
+    return {n for n in _nick.values() if n}
+
+
+def nick_of(cookie):
+    return _nick.get(cookie)
 
 
 def list_canvases(cookie, canvas):
@@ -175,7 +212,7 @@ def list_canvases(cookie, canvas):
         conn.close()
         m = re.search(r'"nickname":"([^"]{1,40})"', html)
         if m:
-            _player["name"] = m.group(1)
+            _nick[cookie] = m.group(1)
         i = html.find('"canvases":[')
         if i < 0:
             return _canvases_cache["list"]
@@ -195,6 +232,10 @@ CREATE TABLE IF NOT EXISTS settings (k text PRIMARY KEY, v jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS layers  (id text PRIMARY KEY, ord int NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS sprites (id text PRIMARY KEY, ord int NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS runtime (k text PRIMARY KEY, v jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS users (
+  id text PRIMARY KEY, username text UNIQUE NOT NULL, pw text NOT NULL,
+  cookie text NOT NULL DEFAULT '', canvas text NOT NULL DEFAULT 'playtest-sandbox', prefs jsonb NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS sessions (token text PRIMARY KEY, uid text NOT NULL, created double precision NOT NULL);
 """
 
 
@@ -205,6 +246,8 @@ class Store:
         self.layers = []
         self.sprites = []
         self.runtime = {}   # état d'exécution persistant : compteurs, stats, journal
+        self.users = {}     # id -> {id, username, pw, cookie, canvas, prefs}
+        self.sessions = {}  # token -> uid
         self.pg = None
         self.backend = "json"
         if HAS_PG:
@@ -247,6 +290,11 @@ class Store:
                 self.sprites = [r[0] for r in cur.fetchall()]
                 cur.execute("SELECT k, v FROM runtime")
                 self.runtime = {k: v for k, v in cur.fetchall()}
+                cur.execute("SELECT id, username, pw, cookie, canvas, prefs FROM users")
+                for id_, un, pw, ck, cv, pr in cur.fetchall():
+                    self.users[id_] = {"id": id_, "username": un, "pw": pw, "cookie": ck, "canvas": cv, "prefs": pr}
+                cur.execute("SELECT token, uid, created FROM sessions")
+                self.sessions = {t: {"uid": u, "created": cr} for t, u, cr in cur.fetchall()}
             if not self.layers and not self.sprites:
                 self._migrate_from_json()
             return
@@ -257,6 +305,8 @@ class Store:
             self.layers = d.get("layers", [])
             self.sprites = d.get("sprites", [])
             self.runtime = d.get("runtime", {})
+            self.users = d.get("users", {})
+            self.sessions = d.get("sessions", {})
         except FileNotFoundError:
             pass
 
@@ -281,7 +331,8 @@ class Store:
             tmp = DATA_FILE + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump({"settings": self.settings, "layers": self.layers,
-                           "sprites": self.sprites, "runtime": self.runtime}, f)
+                           "sprites": self.sprites, "runtime": self.runtime,
+                           "users": self.users, "sessions": self.sessions}, f)
             os.replace(tmp, DATA_FILE)
 
     def save_runtime(self, data):
@@ -313,9 +364,83 @@ class Store:
                 for k, v in self.runtime.items():
                     cur.execute("INSERT INTO runtime(k, v) VALUES (%s, %s::jsonb) "
                                 "ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v", (k, json.dumps(v)))
+                self._save_auth(cur)
         except Exception as e:
             print(f"Écriture PostgreSQL échouée : {e}", flush=True)
             self.pg = None  # tombée : reconnexion au prochain appel
+
+    def _save_auth(self, cur):
+        ids = list(self.users)
+        cur.execute("DELETE FROM users WHERE id <> ALL(%s)" if ids else "DELETE FROM users", (ids,) if ids else ())
+        for u in self.users.values():
+            cur.execute("INSERT INTO users(id, username, pw, cookie, canvas, prefs) VALUES (%s,%s,%s,%s,%s,%s::jsonb) "
+                        "ON CONFLICT (id) DO UPDATE SET username=EXCLUDED.username, pw=EXCLUDED.pw, "
+                        "cookie=EXCLUDED.cookie, canvas=EXCLUDED.canvas, prefs=EXCLUDED.prefs",
+                        (u["id"], u["username"], u["pw"], u.get("cookie", ""), u.get("canvas", DEFAULT_CANVAS), json.dumps(u.get("prefs", {}))))
+        toks = list(self.sessions)
+        cur.execute("DELETE FROM sessions WHERE token <> ALL(%s)" if toks else "DELETE FROM sessions", (toks,) if toks else ())
+        for t, s in self.sessions.items():
+            uid = s["uid"] if isinstance(s, dict) else s
+            cr = s.get("created", time.time()) if isinstance(s, dict) else time.time()
+            cur.execute("INSERT INTO sessions(token, uid, created) VALUES (%s,%s,%s) "
+                        "ON CONFLICT (token) DO UPDATE SET uid=EXCLUDED.uid", (t, uid, cr))
+
+    # -- comptes et sessions
+    def create_user(self, username, pw):
+        with self.lock:
+            if any(u["username"].lower() == username.lower() for u in self.users.values()):
+                return None
+            uid = secrets.token_hex(8)
+            self.users[uid] = {"id": uid, "username": username, "pw": hash_pw(pw),
+                               "cookie": "", "canvas": DEFAULT_CANVAS, "prefs": {}}
+            # le premier compte hérite des calques/sprites sans propriétaire (données migrées)
+            if len(self.users) == 1:
+                for l in self.layers:
+                    l.setdefault("owner", uid)
+                for s in self.sprites:
+                    s.setdefault("owner", uid)
+            self.save()
+            return self.users[uid]
+
+    def user_by_name(self, username):
+        return next((u for u in self.users.values() if u["username"].lower() == username.lower()), None)
+
+    def save_user(self, uid):
+        with self.lock:
+            self.save()
+
+    def new_session(self, uid):
+        with self.lock:
+            tok = secrets.token_urlsafe(32)
+            self.sessions[tok] = {"uid": uid, "created": time.time()}
+            self._prune_sessions()
+            self.save()
+            return tok
+
+    def session_uid(self, token):
+        if not token:
+            return None
+        s = self.sessions.get(token)
+        if not s:
+            return None
+        if isinstance(s, str):          # ancien format token->uid
+            s = {"uid": s, "created": time.time()}
+            self.sessions[token] = s
+        if time.time() - s.get("created", 0) > SESSION_TTL:
+            self.delete_session(token)
+            return None
+        return s["uid"]
+
+    def _prune_sessions(self):
+        now = time.time()
+        for t in [t for t, s in self.sessions.items()
+                  if isinstance(s, dict) and now - s.get("created", 0) > SESSION_TTL]:
+            del self.sessions[t]
+
+    def delete_session(self, token):
+        with self.lock:
+            if self.sessions.pop(token, None) is not None:
+                self.save()
 
     @staticmethod
     def _replace(cur, table, items):
@@ -421,12 +546,12 @@ class Engine:
             self.logs.append({"time": time.strftime("%H:%M:%S"), "msg": msg, "level": level})
 
     # -- lecture du canvas
-    def fetch_board(self, canvas, max_age=0):
+    def fetch_board(self, canvas, max_age=0, cookie=None):
         with self.lock:
             b = self.boards.get(canvas)
             if b and time.time() - b["t"] <= max_age:
                 return b
-        res = telefunc("onSynchronizeCanvas", [canvas], self.store.settings["cookie"], canvas, timeout=30)
+        res = telefunc("onSynchronizeCanvas", [canvas], cookie or self.any_cookie(), canvas, timeout=30)
         if res.get("status") != "success":
             return None if not b else b
         val = res["value"]
@@ -465,13 +590,11 @@ class Engine:
             if prev is None:  # première relecture : juste une base de comparaison
                 self.stats_last[canvas] = now
                 return
-            me = _player["name"] or "moi"
             placers = collections.Counter()
             for k, rev in cur.items():
                 old = prev.get(k)
                 if old is None or rev > old:  # case nouvellement peinte ou repeinte
-                    owner = b["pixels"][k][1] or "?"
-                    placers[me if owner == "(vous)" else owner] += 1
+                    placers[b["pixels"][k][1] or "?"] += 1
             dt = max(0.001, now - self.stats_last.get(canvas, now))
             self.stats_last[canvas] = now
             st = self.stats.setdefault(canvas, {})
@@ -481,9 +604,8 @@ class Engine:
                 s["last"] = now
                 s["maxRate"] = max(s["maxRate"], k / dt)  # rafale la plus rapide (pixels/s)
 
-    def stats_for(self, canvas):
+    def stats_for(self, canvas, me="moi"):
         b = self.boards.get(canvas)
-        me = _player["name"] or "moi"
         owned = collections.Counter((me if (v[1] == "(vous)") else (v[1] or "?")) for v in b["pixels"].values()) if b else collections.Counter()
         with self.lock:
             st = dict(self.stats.get(canvas, {}))
@@ -505,10 +627,22 @@ class Engine:
         rows.sort(key=lambda r: (-r["owned"], -r["observed"]))
         return rows
 
+    # -- cookie Codawar à utiliser (par compte)
+    def any_cookie(self):
+        for u in self.store.users.values():
+            if u.get("cookie"):
+                return u["cookie"]
+        return self.store.settings.get("cookie", "")
+
+    def cookie_for_owner(self, uid):
+        u = self.store.users.get(uid) if uid else None
+        return (u.get("cookie") if u else "") or self.any_cookie()
+
     # -- file d'attente
-    def enqueue(self, canvas, pixels, front=False, source="manual"):
+    def enqueue(self, canvas, pixels, front=False, source="manual", cookie=None):
+        cookie = cookie or self.any_cookie()
         with self.lock:
-            items = [((canvas, int(c), int(r)), (h.lower(), source)) for c, r, h in pixels]
+            items = [((canvas, int(c), int(r)), (h.lower(), source, cookie)) for c, r, h in pixels]
             for key, val in (reversed(items) if front else items):
                 self.failed.pop(key, None)
                 self.pending[key] = val
@@ -551,9 +685,9 @@ class Engine:
             if item is None:
                 time.sleep(0.05)
                 continue
-            (canvas, col, row), (color, source) = item
+            (canvas, col, row), (color, source, cookie) = item
             try:
-                self._place(canvas, col, row, color, source)
+                self._place(canvas, col, row, color, source, cookie)
             finally:
                 with self.lock:
                     self.inflight -= 1
@@ -561,8 +695,8 @@ class Engine:
             if delay and time.time() >= self.attack_until:  # pas de pause en mode défense
                 time.sleep(delay)
 
-    def _place(self, canvas, col, row, color, source):
-        res = telefunc("onPlacePixel", [canvas, col, row, color], self.store.settings["cookie"], canvas)
+    def _place(self, canvas, col, row, color, source, cookie):
+        res = telefunc("onPlacePixel", [canvas, col, row, color], cookie, canvas)
         status, code = res.get("status"), (res.get("code") or "")
         key = (canvas, col, row)
         if status == "success":
@@ -585,7 +719,7 @@ class Engine:
             wait = 10 if status == "rejected" else 2
             with self.lock:
                 if key not in self.pending:
-                    self.pending[key] = (color, source)
+                    self.pending[key] = (color, source, cookie)
                     self.pending.move_to_end(key, last=False)
                 first = time.time() >= self.backoff_until
                 self.backoff_until = max(self.backoff_until, time.time() + wait)
@@ -624,7 +758,8 @@ class Engine:
                 del self.pending[k]
         missing = {}
         for canvas, ls in by_canvas.items():
-            b = self.fetch_board(canvas, max_age=0)
+            cookie_of = {l["id"]: self.cookie_for_owner(l.get("owner")) for l in ls}
+            b = self.fetch_board(canvas, max_age=0, cookie=cookie_of[ls[0]["id"]])
             if b is None:
                 self.log(f"Lecture du canvas '{canvas}' impossible", "error")
                 continue
@@ -648,14 +783,15 @@ class Engine:
                 prev = self.prev_missing.get(l["id"], 0)
                 jump = missing[l["id"]] - prev
                 if prev <= 2 and jump >= threshold:
+                    mine_names = our_names() | {"", "(vous)"}
                     attackers = collections.Counter(b["pixels"][(c, r)][1] for (c, r), lid in owner_of.items()
-                                                    if lid == l["id"] and (c, r) in b["pixels"] and b["pixels"][(c, r)][1] not in ("", "(vous)", _player["name"]))
+                                                    if lid == l["id"] and (c, r) in b["pixels"] and b["pixels"][(c, r)][1] not in mine_names)
                     who = ", ".join(f"{n} ({k})" for n, k in attackers.most_common(3)) or "inconnu"
                     self.log(f"VANDALISME sur « {l['name']} » : {jump} pixels écrasés. Auteur(s) : {who}", "error")
                     with self.lock:
                         self.vandal_alert = {"layer": l["name"], "canvas": canvas, "count": jump, "who": who, "t": now}
             # un pixel "attaqué" = actuellement peint par quelqu'un d'autre (pas vide, pas nous)
-            mine = ("", "(vous)", _player["name"])
+            mine = our_names() | {"", "(vous)"}
             def attacked(c, r):
                 o = b["pixels"].get((c, r))
                 return bool(o) and o[1] not in mine
@@ -672,7 +808,7 @@ class Engine:
                 for c, r, h in todo:
                     key = (canvas, c, r)
                     if key not in self.pending:
-                        self.pending[key] = (h, "layer")
+                        self.pending[key] = (h, "layer", cookie_of[owner_of[(c, r)]])  # cookie du propriétaire du calque
                         self.pending.move_to_end(key, last=(not attacked(c, r)))
         with self.lock:
             self.prev_missing = dict(missing)
@@ -709,6 +845,35 @@ store = Store()
 engine = Engine(store)
 
 
+# ---------------------------------------------------------------- Outils de sécurité HTTP
+
+def session_cookie(tok="", clear=False):
+    attrs = "HttpOnly; Path=/; SameSite=Strict" + ("; Secure" if COOKIE_SECURE else "")
+    return f"sid=; {attrs}; Max-Age=0" if clear else f"sid={tok}; {attrs}; Max-Age={SESSION_TTL}"
+
+
+_login_fails = collections.defaultdict(list)   # ip -> [timestamps d'échec]
+_login_lock = threading.Lock()
+
+
+def login_blocked(ip):
+    now = time.time()
+    with _login_lock:
+        fails = [t for t in _login_fails[ip] if now - t < 900]  # fenêtre 15 min
+        _login_fails[ip] = fails
+        return len(fails) >= 10
+
+
+def login_fail(ip):
+    with _login_lock:
+        _login_fails[ip].append(time.time())
+
+
+def login_ok(ip):
+    with _login_lock:
+        _login_fails.pop(ip, None)
+
+
 # ---------------------------------------------------------------- Serveur web
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -718,59 +883,178 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # silencieux (le polling est très bavard)
 
-    def _json(self, data, code=200):
+    def end_headers(self):
+        # en-têtes de sécurité sur toutes les réponses
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+        self.send_header("Content-Security-Policy",
+                         "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
+                         "script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; "
+                         "base-uri 'none'; form-action 'self'")
+        if COOKIE_SECURE:
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
+        super().end_headers()
+
+    def _same_origin(self):
+        """Anti-CSRF : refuse une requête d'écriture venant d'un autre site."""
+        sfs = self.headers.get("Sec-Fetch-Site")
+        if sfs is not None:
+            return sfs in ("same-origin", "same-site", "none")
+        origin = self.headers.get("Origin")
+        if origin:
+            return urllib.parse.urlparse(origin).netloc == self.headers.get("Host", "")
+        return True  # pas de signaux navigateur (curl / app locale) : autorisé
+
+    def _json(self, data, code=200, set_cookie=None):
         body = json.dumps(data).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if set_cookie is not None:
+            self.send_header("Set-Cookie", set_cookie)
         self.end_headers()
         self.wfile.write(body)
 
+    # -- authentification
+    def _cookies(self):
+        out = {}
+        for part in (self.headers.get("Cookie", "") or "").split(";"):
+            if "=" in part:
+                k, v = part.strip().split("=", 1)
+                out[k] = v
+        return out
+
+    def _user(self):
+        uid = store.session_uid(self._cookies().get("sid"))
+        return store.users.get(uid) if uid else None
+
+    def _my_cookie(self, user):
+        return (user.get("cookie") if user else "") or ""
+
+    def _my_canvas(self, user, canvas=None):
+        return canvas or (user.get("canvas") if user else None) or store.settings["canvas"]
+
     def do_GET(self):
-        if self.path.startswith("/data/"):
-            return self.send_error(403)  # ne pas exposer le cookie
+        if self.path.startswith("/data/") or self.path in ("/server.py", "/.env"):
+            return self.send_error(403)
+        if self.path == "/api/me":
+            u = self._user()
+            if not u:
+                return self._json({"auth": False, "backend": store.backend})
+            return self._json({"auth": True, "username": u["username"], "hasCookie": bool(u.get("cookie")),
+                               "canvas": u.get("canvas", store.settings["canvas"]), "prefs": u.get("prefs", {}),
+                               "backend": store.backend})
+        # seule la page de l'app est servie (pas d'accès aux autres fichiers du dossier)
+        if not self.path.startswith("/api/"):
+            path = self.path.split("?", 1)[0]
+            if path in ("/", "/index.html"):
+                self.path = "/index.html"
+                return super().do_GET()
+            return self.send_error(404)
+        u = self._user()
+        if not u:
+            return self._json({"auth": False, "message": "connexion requise"}, 401)
+        ck = self._my_cookie(u)
         if self.path == "/api/canvases":
-            lst = list_canvases(store.settings["cookie"], store.settings["canvas"])
+            lst = list_canvases(ck, self._my_canvas(u))
             return self._json({"success": lst is not None, "canvases": lst or []})
         if self.path == "/api/layers":
             with store.lock:
-                return self._json({"layers": store.layers, "settings": store.settings, "backend": store.backend})
+                mine = [l for l in store.layers if l.get("owner") == u["id"]]
+                return self._json({"layers": mine, "settings": store.settings, "backend": store.backend,
+                                   "canvas": u.get("canvas", store.settings["canvas"]), "cookie": ck})
         if self.path == "/api/sprites":
             with store.lock:
-                return self._json({"sprites": store.sprites})
+                return self._json({"sprites": [s for s in store.sprites if s.get("owner") == u["id"]]})
         if self.path.startswith("/api/status"):
-            canvas = self.path.partition("canvas=")[2] or store.settings["canvas"]
+            canvas = self._my_canvas(u, self.path.partition("canvas=")[2] or None)
             return self._json(engine.status(canvas))
         if self.path.startswith("/api/stats"):
-            canvas = self.path.partition("canvas=")[2] or store.settings["canvas"]
-            engine.fetch_board(canvas, max_age=3)  # rafraîchit si besoin (alimente les stats)
-            return self._json({"rows": engine.stats_for(canvas), "me": _player["name"]})
-        super().do_GET()
+            canvas = self._my_canvas(u, self.path.partition("canvas=")[2] or None)
+            engine.fetch_board(canvas, max_age=3, cookie=ck)
+            return self._json({"rows": engine.stats_for(canvas, nick_of(ck) or u["username"]), "me": nick_of(ck) or u["username"]})
+        return self._json({"success": False}, 404)
 
     def do_POST(self):
+        if not self._same_origin():  # anti-CSRF
+            return self._json({"success": False, "message": "origine refusée"}, 403)
         n = int(self.headers.get("Content-Length", 0))
+        if n > MAX_BODY:
+            return self._json({"success": False, "message": "requête trop volumineuse"}, 413)
         try:
             body = json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
         except Exception:
             body = {}
         p = self.path
+        ip = self.client_address[0] if self.client_address else "?"
+
+        # --- authentification (public) ---
+        if p in ("/api/register", "/api/login"):
+            if login_blocked(ip):
+                return self._json({"success": False, "message": "trop de tentatives, réessaie dans 15 min"}, 429)
+            time.sleep(0.3)  # ralentit la force brute
+        if p == "/api/register":
+            un, pw = (body.get("username") or "").strip(), body.get("password") or ""
+            if len(un) < 3 or len(pw) < MIN_PW:
+                return self._json({"success": False, "message": f"pseudo ≥ 3 et mot de passe ≥ {MIN_PW} caractères"}, 400)
+            u = store.create_user(un, pw)
+            if not u:
+                return self._json({"success": False, "message": "pseudo déjà pris"}, 409)
+            login_ok(ip)
+            tok = store.new_session(u["id"])
+            return self._json({"success": True, "username": un}, set_cookie=session_cookie(tok))
+        if p == "/api/login":
+            u = store.user_by_name((body.get("username") or "").strip())
+            if not u or not check_pw(body.get("password") or "", u["pw"]):
+                login_fail(ip)
+                return self._json({"success": False, "message": "pseudo ou mot de passe incorrect"}, 401)
+            login_ok(ip)
+            tok = store.new_session(u["id"])
+            return self._json({"success": True, "username": u["username"]}, set_cookie=session_cookie(tok))
+        if p == "/api/logout":
+            store.delete_session(self._cookies().get("sid"))
+            return self._json({"success": True}, set_cookie=session_cookie(clear=True))
+
+        # --- à partir d'ici : connexion requise ---
+        u = self._user()
+        if not u:
+            return self._json({"auth": False, "message": "connexion requise"}, 401)
+        uid, ck = u["id"], self._my_cookie(u)
+
+        if p == "/api/account":  # cookie Codawar + canvas par défaut du compte
+            with store.lock:
+                if "cookie" in body:
+                    u["cookie"] = (body.get("cookie") or "").strip()
+                if "canvas" in body:
+                    u["canvas"] = body.get("canvas") or store.settings["canvas"]
+                if "prefs" in body and isinstance(body["prefs"], dict):
+                    u["prefs"] = body["prefs"]
+                store.save()
+            if u.get("cookie"):  # apprend le pseudo Codawar de ce cookie (en tâche de fond)
+                threading.Thread(target=lambda c=u["cookie"], cv=u["canvas"]: list_canvases(c, cv), daemon=True).start()
+            return self._json({"success": True, "hasCookie": bool(u.get("cookie")), "canvas": u.get("canvas")})
 
         if p == "/api/sprites/save":
             sp = body.get("sprite")
             if not sp or "id" not in sp:
                 return self._json({"success": False}, 400)
+            sp["owner"] = uid
             store.save_sprite(sp)
             return self._json({"success": True})
         if p == "/api/sprites/delete":
-            store.delete_sprite(body.get("id"))
+            with store.lock:
+                if any(s["id"] == body.get("id") and s.get("owner") == uid for s in store.sprites):
+                    store.delete_sprite(body.get("id"))
             return self._json({"success": True})
 
         if p == "/api/canvas":
-            canvas = body.get("canvas") or store.settings["canvas"]
-            b = engine.fetch_board(canvas, max_age=float(body.get("maxAge", 2)))
+            canvas = self._my_canvas(u, body.get("canvas"))
+            b = engine.fetch_board(canvas, max_age=float(body.get("maxAge", 2)), cookie=ck)
             if b is None:
-                return self._json({"success": False, "message": "lecture impossible (cookie ? nom du canvas ?)"})
+                return self._json({"success": False, "message": "lecture impossible (cookie Codawar ? nom du canvas ?)"})
             owners, oidx, cells = [], {}, []
             for (c, r), (h, o, prot, *_rest) in b["pixels"].items():
                 if o not in oidx:
@@ -781,9 +1065,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                "wallet": b["wallet"], "closure": b.get("closure")})
 
         if p == "/api/place":
-            canvas = body.get("canvas") or store.settings["canvas"]
-            n = engine.enqueue(canvas, body.get("pixels", []), front=body.get("front", True), source="manual")
-            return self._json({"success": True, "queued": n})
+            if not ck:
+                return self._json({"success": False, "message": "ajoute ton cookie Codawar dans Réglages"}, 400)
+            canvas = self._my_canvas(u, body.get("canvas"))
+            qn = engine.enqueue(canvas, body.get("pixels", []), front=body.get("front", True), source="manual", cookie=ck)
+            return self._json({"success": True, "queued": qn})
 
         if p == "/api/queue/clear":
             engine.clear_queue()
@@ -798,10 +1084,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             engine.guard_kick.set()
             return self._json({"success": True})
 
-        if p == "/api/settings":
+        if p == "/api/settings":  # réglages moteur partagés
             with store.lock:
                 for k in DEFAULT_SETTINGS:
-                    if k in body:
+                    if k in body and k != "cookie":  # le cookie est par compte (/api/account)
                         store.settings[k] = body[k]
                 store.settings["workers"] = max(1, min(MAX_WORKERS, int(store.settings["workers"])))
                 store.save()
@@ -811,19 +1097,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             layer = body.get("layer")
             if not layer or "id" not in layer:
                 return self._json({"success": False, "message": "calque invalide"}, 400)
+            layer["owner"] = uid
             with store.lock:
                 old = next((l for l in store.layers if l["id"] == layer["id"]), None)
+                if old and old.get("owner") not in (None, uid):
+                    return self._json({"success": False, "message": "calque d'un autre compte"}, 403)
             store.upsert_layer(layer)
             if old and (old.get("active") and not layer.get("active") or old.get("x") != layer.get("x") or old.get("y") != layer.get("y")):
-                engine.drop_layer_pixels()  # désactivé ou déplacé : ne pas poser l'ancienne version
+                engine.drop_layer_pixels()
             else:
                 engine.guard_kick.set()
             return self._json({"success": True})
 
         if p == "/api/layers/delete":
-            store.delete_layer(body.get("id"))
+            with store.lock:
+                if any(l["id"] == body.get("id") and l.get("owner") == uid for l in store.layers):
+                    store.delete_layer(body.get("id"))
             engine.drop_layer_pixels()
-            engine.log("Calque supprimé", "warning")
             return self._json({"success": True})
 
         if p == "/api/layers/reorder":
@@ -831,12 +1121,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             engine.guard_kick.set()
             return self._json({"success": True})
 
-        self.send_error(404)
+        return self._json({"success": False}, 404)
 
 
 def main():
-    # récupère le pseudo du compte (pour distinguer mes pixels d'une attaque)
-    threading.Thread(target=lambda: list_canvases(store.settings["cookie"], store.settings["canvas"]), daemon=True).start()
+    # apprend le pseudo Codawar de chaque compte (pour ne pas prendre ses pixels pour une attaque)
+    def prime():
+        for u in list(store.users.values()):
+            if u.get("cookie"):
+                list_canvases(u["cookie"], u.get("canvas", DEFAULT_CANVAS))
+    threading.Thread(target=prime, daemon=True).start()
     for i in range(MAX_WORKERS):
         threading.Thread(target=engine.worker, args=(i,), daemon=True).start()
     threading.Thread(target=engine.guard_loop, daemon=True).start()

@@ -1,17 +1,27 @@
 # Pile Codawar Pixel Studio pour Cosmos Cloud (Raspberry Pi 4).
+# Image Python publique + code monté depuis le Pi (pas de build, comme ta pile node).
 # L'app tourne 24/24, redémarre toute seule, et garde ses données dans PostgreSQL.
 services:
   codawar-studio:
     container_name: codawar-studio
-    build: .                       # construit l'image depuis le Dockerfile de ce dossier
+    image: python:3.12-slim        # image publique (pull) : aucun build à faire
     restart: unless-stopped
+    labels:
+      cosmos-auto-update: "true"
+      cosmos.stack: "codawar"
+    working_dir: /app
+    command: sh start.sh
+    volumes:
+      # chemin du dépôt cloné sur le Pi -> adapte la source si ton dossier diffère
+      - /home/familytsuki/codawar-pixel-art:/app
     environment:
       - HOST=0.0.0.0
       - PORT=5055
-      # connexion à la base (service codawar-db ci-dessous)
-      - CODAWAR_PG=host=codawar-db dbname=${POSTGRES_DB:-codawar} user=${POSTGRES_USER:-codawar} password=${POSTGRES_PASSWORD:-change-moi}
-      # TON cookie de session Codawar (à renouveler quand il expire)
-      - CODAWAR_COOKIE=${CODAWAR_COOKIE:-}
+      - PYTHONUNBUFFERED=1
+      - CODAWAR_PG=host=codawar-db dbname=${POSTGRES_DB:-codawar} user=${POSTGRES_USER:-codawar} password=${POSTGRES_PASSWORD:?definir POSTGRES_PASSWORD dans .env}
+      - COOKIE_SECURE=1
+      - AUTH_PEPPER=${AUTH_PEPPER:?definir AUTH_PEPPER dans .env}
+      - SESSION_TTL_DAYS=30
     ports:
       - "0.0.0.0:5055:5055/tcp"    # Cosmos peut aussi exposer via une Route plutôt que ce port
     depends_on:
@@ -23,10 +33,14 @@ services:
     container_name: codawar-db
     image: postgres:16-alpine
     restart: unless-stopped
+    labels:
+      cosmos-auto-update: "true"
+      cosmos.stack: "codawar"
+      cosmos.stack.main: "true"
     environment:
-      - POSTGRES_USER=codawar
-      - POSTGRES_PASSWORD=change-moi
-      - POSTGRES_DB=codawar
+      - POSTGRES_USER=${POSTGRES_USER:-codawar}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?definir POSTGRES_PASSWORD dans .env}
+      - POSTGRES_DB=${POSTGRES_DB:-codawar}
     volumes:
       - codawar-pgdata:/var/lib/postgresql/data
     networks:
