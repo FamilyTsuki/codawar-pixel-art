@@ -593,6 +593,10 @@ class Engine:
         self.layer_missing = {}  # layer id -> pixels encore faux
         self.prev_missing = {}   # pour détecter un saut soudain (vandalisme)
         self.vandal_alert = None
+        self.last_reject = None  # dernier refus/erreur : {code, message, t}
+        self.refill_rate = 0.0   # crédits/seconde estimés (moyenne glissante)
+        self._rf_bal = None
+        self._rf_t = 0
         self.attack_until = 0    # tant que > now : mode défense (relecture rapide + priorité + plus de workers)
         self.guard_kick = threading.Event()
         self.last_guard = 0
@@ -672,8 +676,28 @@ class Engine:
         with self.lock:
             self.boards[canvas] = b
             self.wallet = b["wallet"] or self.wallet
+            self._track_refill(b["wallet"], b["t"])
         self.track_stats(canvas, b)
         return b
+
+    def _track_refill(self, wallet, t):
+        """Estime la vitesse de rechargement (crédits/s) sur des fenêtres ≥45s où le solde monte."""
+        if not wallet or wallet.get("isUnlimited"):
+            return
+        bal = wallet.get("balance")
+        if bal is None:
+            return
+        if self._rf_bal is None:
+            self._rf_bal, self._rf_t = bal, t
+            return
+        dt = t - self._rf_t
+        if dt >= 45 and bal > self._rf_bal:
+            rate = (bal - self._rf_bal) / dt
+            if rate <= 2:  # garde-fou contre les mesures aberrantes
+                self.refill_rate = rate if not self.refill_rate else 0.6 * self.refill_rate + 0.4 * rate
+            self._rf_bal, self._rf_t = bal, t
+        elif bal < self._rf_bal:  # on a posé des pixels : nouvelle base de mesure
+            self._rf_bal, self._rf_t = bal, t
 
     # -- statistiques : observe les poses entre deux relectures du canvas
     def track_stats(self, canvas, b):
@@ -895,12 +919,15 @@ class Engine:
                     self.pending.move_to_end(key, last=False)
                 first = time.time() >= self.backoff_until
                 self.backoff_until = max(self.backoff_until, time.time() + wait)
+            with self.lock:
+                self.last_reject = {"code": code or "réseau", "message": res.get("message", ""), "t": time.time()}
             if first:
                 self.log(f"Pause {wait}s : {code or res.get('message')} — {res.get('message', '')}", "warning")
             return
         with self.lock:
             self.errors += 1
             self.failed[key] = time.time() + 120
+            self.last_reject = {"code": code, "message": res.get("message", ""), "t": time.time()}
         self.log(f"Refusé ({col}, {row}) {color} : {code} — {res.get('message', '')}", "error")
 
     # -- surveillance des calques actifs
@@ -993,9 +1020,42 @@ class Engine:
             while self.recent and now - self.recent[0] > 10:
                 self.recent.popleft()
             pend = [[k[1], k[2], v[0]] for k, v in self.pending.items() if k[0] == canvas][:4000]
+            backoff = max(0, round(self.backoff_until - now))
+            b = self.boards.get(canvas)
+            closed = bool(b and (b.get("closure") or {}).get("isClosedForPlayer"))
+            # raison globale pour laquelle la file n'avance pas
+            if not self.any_cookie():
+                blocked = "pas de cookie Codawar"
+            elif self.paused:
+                blocked = "en pause"
+            elif not within_schedule(self.store.settings):
+                blocked = "minuteur : hors plage horaire"
+            elif closed:
+                blocked = "canvas fermé"
+            elif backoff > 0:
+                lr = self.last_reject or {}
+                blocked = f"attente {backoff}s — {lr.get('message') or lr.get('code') or 'crédits/limite'}"
+            else:
+                blocked = None
+            w = self.wallet or {}
+            nxt = None
+            ra = w.get("refilledAt")
+            if ra:
+                try:
+                    import calendar
+                    nxt = max(0, round(calendar.timegm(time.strptime(ra[:19], "%Y-%m-%dT%H:%M:%S")) - time.time()))
+                except Exception:
+                    nxt = None
             return {
                 "paused": self.paused,
                 "queue": len(self.pending),
+                "queueHere": len(pend),
+                "blocked": blocked,
+                "lastReject": self.last_reject,
+                "credits": w.get("balance"),
+                "unlimited": bool(w.get("isUnlimited")),
+                "refillPerMin": round(self.refill_rate * 60, 2) if self.refill_rate else None,
+                "nextCredit": nxt,
                 "inflight": self.inflight,
                 "rate": round(len(self.recent) / 10, 1),
                 "placed": self.placed,

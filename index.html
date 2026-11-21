@@ -81,6 +81,7 @@
   .badge { font-size:10px; padding:1px 6px; border-radius:9px; background:var(--line); color:var(--mute); }
   .badge.live { background:#1f4d33; color:var(--ok); }
   .badge.done { background:#1f3a4d; color:var(--acc); }
+  .badge.warn { background:#4d3a1f; color:var(--warn); }
 
   button.big { flex:1; padding:14px; font-size:15px; border-radius:9px; }
   .tab:not(.sel) { display:none; }
@@ -494,6 +495,19 @@ function newLayer(name, x, y, pixels) {
   S.layers.push(l); S.sel = l.id; saveLayer(l, true); renderLayersList(); draw();
   return l;
 }
+// temps estimé pour poser `rem` pixels, selon solde + rechargement (1 crédit = 1 pixel)
+function fmtDur(sec) { sec = Math.round(sec); return sec < 60 ? sec + ' s' : sec < 3600 ? Math.round(sec / 60) + ' min' : (sec / 3600).toFixed(1) + ' h'; }
+function etaText(rem) {
+  const s = S.status || {};
+  if (!rem) return '';
+  const placeRate = Math.max(s.rate || 0, 2);         // pixels/s quand on a des crédits
+  if (s.unlimited) return fmtDur(rem / placeRate);
+  const credits = s.credits || 0, perSec = s.refillPerMin ? s.refillPerMin / 60 : 0;
+  const now = Math.min(rem, credits) / placeRate;     // posables tout de suite
+  if (rem <= credits) return fmtDur(now);
+  if (!perSec) return '?';                             // rechargement inconnu
+  return fmtDur(now + (rem - credits) / perSec);       // le reste au rythme du rechargement
+}
 // bbox des pixels relatifs d'un calque
 function layerBBox(pixels) {
   let x1 = 0, y1 = 0; for (const [dx, dy] of pixels) { if (dx > x1) x1 = dx; if (dy > y1) y1 = dy; }
@@ -549,16 +563,26 @@ function renderLayersList() {
   const list = S.layers.filter(l => l.canvas === S.canvas);
   $('tabLayersN').textContent = list.length || '';
   const missing = (S.status && S.status.layerMissing) || {};
+  const blocked = S.status && S.status.blocked;
   $('layers').innerHTML = list.length ? list.slice().reverse().map(l => {
-    const st = layerStats(l), done = st.total && st.ok === st.total;
-    const badge = l.active ? (done ? '<span class="badge done">protégé</span>' : `<span class="badge live">en cours</span>`) : '';
+    const st = layerStats(l), done = st.total && st.ok === st.total, rem = missing[l.id] || 0;
+    let badge = '';
+    if (l.active) badge = done && !rem
+      ? '<span class="badge done">à jour · protégé</span>'
+      : (blocked ? `<span class="badge warn">bloqué</span>` : `<span class="badge live">pose en cours</span>`);
+    // état détaillé pour un calque actif : reste à poser + temps estimé
+    let state = '';
+    if (l.active) {
+      if (rem > 0) { const e = etaText(rem); state = ` · ${rem} à poser${e ? ' · ~' + e : ''}${blocked ? ' — ' + blocked : ''}`; }
+      else state = ' · à jour';
+    }
     return `<div class="layer ${l.id === S.sel ? 'sel' : ''}" data-id="${l.id}">
       <div class="top">
         <input type="radio" name="lsel" ${l.id === S.sel ? 'checked' : ''} title="Sélectionner">
         <input class="name" value="${l.name.replace(/"/g, '&quot;')}">
         ${badge}
       </div>
-      <div class="meta">${st.ok}/${st.total} pixels corrects · position ${l.x}, ${l.y}${l.active && missing[l.id] ? ` · ${missing[l.id]} en file` : ''}</div>
+      <div class="meta">${st.ok}/${st.total} corrects · pos. ${l.x}, ${l.y}${state}</div>
       <div class="acts">
         <button data-a="active" class="${l.active ? 'on' : ''}" title="Poser puis protéger en continu">${l.active ? 'Actif' : 'Activer'}</button>
         <button data-a="vis" class="${l.visible ? '' : ''}">${l.visible ? 'Masquer' : 'Afficher'}</button>
@@ -1469,11 +1493,15 @@ async function pollStatus() {
     S.status = s; S.pending = s.pending;
     $('hQueue').textContent = s.queue + (s.inflight ? ` (+${s.inflight})` : '');
     $('hRate').textContent = s.rate;
-    $('hWallet').textContent = s.wallet ? (s.wallet.isUnlimited ? '∞' : s.wallet.balance) : '–';
+    $('hWallet').textContent = s.unlimited ? '∞' : (s.credits != null ? s.credits + (s.refillPerMin ? ` (+${s.refillPerMin}/min)` : '') : '–');
     $('btnPause').textContent = s.paused ? 'Reprendre' : 'Pause'; $('btnPause').classList.toggle('on', s.paused);
     $('fPlaced').textContent = s.placed; $('fSkipped').textContent = s.skipped; $('fErr').textContent = s.errors;
     const act = S.layers.filter(l => l.active).length;
-    $('fGuard').textContent = (s.posting === false ? 'minuteur : pose en pause · ' : '') + (s.defending ? `DÉFENSE (réparation rapide ${s.defending}s) · ` : '') + (s.backoff ? `attente ${s.backoff}s · ` : '') + (act ? `${act} calque(s) protégé(s) · vérif. dans ${s.nextGuard}s` : 'aucun calque actif');
+    $('fGuard').textContent =
+      (s.blocked ? 'BLOQUÉ : ' + s.blocked + ' · ' : '') +
+      (s.defending ? `DÉFENSE (réparation rapide ${s.defending}s) · ` : '') +
+      (!s.unlimited && s.credits != null ? `${s.credits} crédit(s)${s.refillPerMin ? ` +${s.refillPerMin}/min` : ''}${s.nextCredit != null ? ` · prochain dans ${s.nextCredit}s` : ''} · ` : '') +
+      (act ? `${act} calque(s) protégé(s) · vérif. dans ${s.nextGuard}s` : 'aucun calque actif');
     // alerte vandalisme : notifie une seule fois chaque nouvelle alerte
     if (s.vandalAlert && s.vandalAlert.t !== S.lastVandal) {
       const fresh = Date.now() / 1000 - s.vandalAlert.t < 120;
