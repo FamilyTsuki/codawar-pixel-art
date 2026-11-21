@@ -591,7 +591,8 @@ class Engine:
         self.logs = collections.deque(maxlen=300)
         self.wallet = None
         self.layer_missing = {}  # layer id -> pixels encore faux
-        self.prev_missing = {}   # pour détecter un saut soudain (vandalisme)
+        self.prev_missing = {}   # pixels faux au tour précédent (UI)
+        self.prev_attacked = {}  # cases réellement écrasées au tour précédent (détection vandalisme)
         self.vandal_alert = None
         self.last_reject = None  # dernier refus/erreur : {code, message, t}
         self.refill_rate = 0.0   # crédits/seconde estimés (moyenne glissante)
@@ -642,7 +643,12 @@ class Engine:
         self._rt_dirty = True
     def log(self, msg, level="info"):
         with self.lock:
-            self.logs.append({"time": time.strftime("%H:%M:%S"), "msg": msg, "level": level})
+            now = time.strftime("%H:%M:%S")
+            if self.logs and self.logs[-1]["msg"] == msg:  # fusionne les répétitions
+                self.logs[-1]["time"] = now
+                self.logs[-1]["n"] = self.logs[-1].get("n", 1) + 1
+                return
+            self.logs.append({"time": now, "msg": msg, "level": level})
 
     # -- lecture du canvas
     def fetch_board(self, canvas, max_age=0, cookie=None):
@@ -911,24 +917,40 @@ class Engine:
             with self.lock:
                 self.skipped += 1
             return
-        if status != "rejected" or any(h in code.lower() for h in RETRY_LATER_HINTS):
-            wait = 10 if status == "rejected" else 2
+        low = code.lower()
+        credit_short = "insufficient" in low or "credit" in low or "balance" in low or "empty" in low
+        if status != "rejected" or any(h in low for h in RETRY_LATER_HINTS):
+            wait = self._credit_wait() if credit_short else (10 if status == "rejected" else 2)
             with self.lock:
                 if key not in self.pending:
                     self.pending[key] = (color, source, cookie)
                     self.pending.move_to_end(key, last=False)
                 first = time.time() >= self.backoff_until
                 self.backoff_until = max(self.backoff_until, time.time() + wait)
-            with self.lock:
                 self.last_reject = {"code": code or "réseau", "message": res.get("message", ""), "t": time.time()}
             if first:
-                self.log(f"Pause {wait}s : {code or res.get('message')} — {res.get('message', '')}", "warning")
+                # message fixe (sans chiffre) pour que le journal fusionne les répétitions
+                self.log("Crédits épuisés — en attente du rechargement" if credit_short
+                         else f"Pause : {code or res.get('message')}", "warning")
             return
         with self.lock:
             self.errors += 1
             self.failed[key] = time.time() + 120
             self.last_reject = {"code": code, "message": res.get("message", ""), "t": time.time()}
         self.log(f"Refusé ({col}, {row}) {color} : {code} — {res.get('message', '')}", "error")
+
+    def _credit_wait(self):
+        """Attente jusqu'au prochain crédit (d'après le wallet), au lieu de marteler toutes les 10 s."""
+        w = self.wallet or {}
+        ra = w.get("refilledAt")
+        if ra:
+            try:
+                import calendar
+                nxt = calendar.timegm(time.strptime(ra[:19], "%Y-%m-%dT%H:%M:%S")) - time.time()
+                return max(15, min(300, round(nxt) + 2))
+            except Exception:
+                pass
+        return 30
 
     # -- surveillance des calques actifs
     def guard_loop(self):
@@ -976,25 +998,29 @@ class Engine:
                 missing[l["id"]] = 0
             for c, r, _ in todo:
                 missing[owner_of[(c, r)]] += 1
-            # Alerte vandalisme : un calque qui saute d'un coup de N pixels faux = quelqu'un l'écrase
-            threshold = int(self.store.settings.get("vandalThreshold", 12))
-            for l in ls:
-                prev = self.prev_missing.get(l["id"], 0)
-                jump = missing[l["id"]] - prev
-                if prev <= 2 and jump >= threshold:
-                    mine_names = our_names() | {"", "(vous)"}
-                    attackers = collections.Counter(b["pixels"][(c, r)][1] for (c, r), lid in owner_of.items()
-                                                    if lid == l["id"] and (c, r) in b["pixels"] and b["pixels"][(c, r)][1] not in mine_names)
-                    who = ", ".join(f"{n} ({k})" for n, k in attackers.most_common(3)) or "inconnu"
-                    self.log(f"VANDALISME sur « {l['name']} » : {jump} pixels écrasés. Auteur(s) : {who}", "error")
-                    with self.lock:
-                        self.vandal_alert = {"layer": l["name"], "canvas": canvas, "count": jump, "who": who, "t": now}
-            # un pixel "attaqué" = actuellement peint par quelqu'un d'autre (pas vide, pas nous)
+            # un pixel "attaqué" = une de NOS cases maintenant peinte par un AUTRE joueur (pas vide, pas nous)
             mine = our_names() | {"", "(vous)"}
             def attacked(c, r):
                 o = b["pixels"].get((c, r))
                 return bool(o) and o[1] not in mine
-            n_attacked = sum(1 for c, r, _ in todo if attacked(c, r))
+            atk = collections.Counter()           # calque -> cases réellement écrasées par d'autres
+            atk_who = collections.defaultdict(collections.Counter)
+            for (c, r), lid in owner_of.items():
+                if attacked(c, r) and b["pixels"][(c, r)][0] != target[(c, r)]:
+                    atk[lid] += 1
+                    atk_who[lid][b["pixels"][(c, r)][1]] += 1
+            n_attacked = sum(atk.values())
+            # Alerte vandalisme : basée sur de VRAIES attaques (pas sur des pixels jamais posés)
+            threshold = int(self.store.settings.get("vandalThreshold", 12))
+            for l in ls:
+                prev = self.prev_attacked.get(l["id"], 0)
+                jump = atk[l["id"]] - prev
+                if prev <= 2 and jump >= threshold:
+                    who = ", ".join(f"{n} ({k})" for n, k in atk_who[l["id"]].most_common(3)) or "inconnu"
+                    self.log(f"VANDALISME sur « {l['name']} » : {jump} pixels écrasés. Auteur(s) : {who}", "error")
+                    with self.lock:
+                        self.vandal_alert = {"layer": l["name"], "canvas": canvas, "count": jump, "who": who, "t": now}
+            self.prev_attacked.update({l["id"]: atk[l["id"]] for l in ls})
             if n_attacked:  # défense : relecture rapide + plus de workers pendant 60 s
                 with self.lock:
                     self.attack_until = max(self.attack_until, now + 60)

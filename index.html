@@ -125,6 +125,7 @@
   .hist-canvas { image-rendering:pixelated; width:100%; max-width:560px; aspect-ratio:1; background:#0c0d10; border:1px solid var(--line); border-radius:8px; display:block; margin-top:6px; }
   #log { height:180px; overflow:auto; background:var(--bg); border:1px solid var(--line); border-radius:5px; padding:4px 6px; font:11px/1.45 ui-monospace, monospace; }
   .l-success { color:var(--ok); } .l-error { color:var(--err); } .l-warning { color:var(--warn); }
+  #log .mut { color:var(--mute); }
   .hint { color:var(--mute); font-size:11px; }
   #toast { position:absolute; left:50%; bottom:14px; transform:translateX(-50%); background:#000c; padding:6px 12px; border-radius:6px; pointer-events:none; opacity:0; transition:opacity .2s; }
   #toast.show { opacity:1; }
@@ -1510,7 +1511,7 @@ async function pollStatus() {
       S.lastVandal = s.vandalAlert.t;
     }
     const log = $('log'), atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 5;
-    log.innerHTML = s.logs.map(l => `<div class="l-${l.level}">[${l.time}] ${l.msg.replace(/</g, '&lt;')}</div>`).join('');
+    log.innerHTML = s.logs.map(l => `<div class="l-${l.level}">[${l.time}] ${l.msg.replace(/</g, '&lt;')}${l.n > 1 ? ` <span class="mut">×${l.n}</span>` : ''}</div>`).join('');
     if (atBottom) log.scrollTop = log.scrollHeight;
     draw();
   } catch {}
