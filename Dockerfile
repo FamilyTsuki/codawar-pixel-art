@@ -7,6 +7,7 @@ WORKDIR /app
 RUN pip install --no-cache-dir "psycopg[binary]==3.3.9"
 
 COPY server.py index.html ./
+COPY studio ./studio
 
 ENV HOST=0.0.0.0 \
     PORT=5055 \
