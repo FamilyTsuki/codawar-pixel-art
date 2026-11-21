@@ -1457,8 +1457,9 @@ async function loadServerState() {
 $('btnSaveSettings').onclick = async () => {
   await post('/api/settings', { workers: +$('sWorkers').value, delay: +$('sDelay').value, guardInterval: +$('sGuard').value, order: $('sOrder').value,
     scheduleOn: $('sSchedOn').checked, scheduleFrom: $('sSchedFrom').value || '00:00', scheduleTo: $('sSchedTo').value || '23:59', vandalThreshold: +$('sVandal').value || 12 });
-  // le cookie Codawar et le canvas par défaut sont attachés au compte
-  await post('/api/account', { cookie: $('sCookie').value.trim(), canvas: S.canvas });
+  // le cookie Codawar et le canvas par défaut sont attachés au compte (le serveur nettoie le cookie collé)
+  const acc = await post('/api/account', { cookie: $('sCookie').value, canvas: S.canvas });
+  if (acc && acc.success === false) { toast(acc.message || 'cookie invalide'); return; }
   S.statusOrder = $('sOrder').value;
   $('sSaved').textContent = 'enregistré'; setTimeout(() => $('sSaved').textContent = '', 1500);
 };

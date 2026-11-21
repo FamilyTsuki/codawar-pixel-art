@@ -8,6 +8,32 @@ import time
 
 from . import config
 
+COOKIE_NAME = "codawar_session"
+
+
+def normalize_cookie(raw):
+    """Nettoie un cookie collé par l'utilisateur et renvoie la valeur d'en-tête Cookie.
+
+    Tolère : guillemets autour, préfixe « Cookie: » collé depuis les outils développeur,
+    clé absente (valeur seule), espaces et sauts de ligne. Champ vide = efface le cookie.
+    Lève ValueError avec un message simple si le cookie est inutilisable.
+    """
+    s = (raw or "").strip()
+    if not s:
+        return ""  # champ vidé volontairement
+    if s[:7].lower() == "cookie:":  # en-tête collé entier
+        s = s[7:].strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'":  # guillemets autour
+        s = s[1:-1].strip()
+    s = " ".join(s.split())  # supprime sauts de ligne / tabulations
+    if not s:
+        raise ValueError("cookie vide")
+    if "=" not in s:  # l'utilisateur a collé seulement la valeur
+        s = f"{COOKIE_NAME}={s}"
+    if f"{COOKIE_NAME}=" not in s:
+        raise ValueError(f"cookie invalide : il doit contenir « {COOKIE_NAME}= »")
+    return s
+
 
 class CodawarClient:
     """Appels telefunc avec une connexion HTTPS persistante par thread."""

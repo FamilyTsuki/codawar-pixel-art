@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 
 from .. import config
 from ..palette import COLOR_INDEX
+from ..codawar import normalize_cookie
 from ..security import check_pw, session_cookie
 from ..engine.snapshots import decode_grid
 
@@ -145,8 +146,13 @@ class Api:
 
     def account(self, req):
         """Cookie Codawar + canvas par défaut + préférences du compte."""
-        u = req.user
-        self.store.update_account(u, req.body)
+        u, values = req.user, req.body
+        if "cookie" in values:  # tolère guillemets, préfixe, clé absente
+            try:
+                values = {**values, "cookie": normalize_cookie(values.get("cookie"))}
+            except ValueError as e:
+                return fail(400, str(e))
+        self.store.update_account(u, values)
         if u.get("cookie"):  # apprend le pseudo Codawar de ce cookie
             self.directory.learn_async(u["cookie"], u["canvas"])
         return Response({"success": True, "hasCookie": bool(u.get("cookie")), "canvas": u.get("canvas")})
