@@ -302,9 +302,14 @@ class Store:
         self.settings.update(legacy.get("settings", {}))
         self.layers = legacy.get("layers", [])
         self.sprites = legacy.get("sprites", [])
+        # comptes, sessions et état d'exécution aussi : sinon un repli JSON
+        # temporaire ferait perdre les comptes créés entre-temps
+        self.runtime = legacy.get("runtime", {}) or self.runtime
+        self.users = {**legacy.get("users", {}), **self.users}
+        self.sessions = {**legacy.get("sessions", {}), **self.sessions}
         self.save()
         _log(f"Migration de {config.DATA_FILE} vers PostgreSQL : "
-             f"{len(self.layers)} calques, {len(self.sprites)} sprites")
+             f"{len(self.layers)} calques, {len(self.sprites)} sprites, {len(self.users)} comptes")
 
     def _state(self):
         return {k: getattr(self, k) for k in STATE_KEYS}
