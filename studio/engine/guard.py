@@ -6,8 +6,7 @@ import random
 import threading
 import time
 
-from ..palette import WHITE
-from .board import ME
+from .board import ME, in_board
 from .pixel_queue import SOURCE_LAYER
 
 
@@ -20,7 +19,7 @@ def build_target(layers, board):
     for l in layers:
         for dx, dy, h in l["pixels"]:
             c, r = l["x"] + dx, l["y"] + dy
-            if 0 <= c < board["w"] and 0 <= r < board["h"]:
+            if in_board(board, c, r):
                 target[(c, r)] = h.lower()
                 owner_of[(c, r)] = l["id"]
     return target, owner_of
@@ -95,8 +94,9 @@ class Guard:
         now = time.time()
         pixels = board["pixels"]
         target, owner_of = build_target(layers, board)
+        # case vide ≠ blanc : un pixel blanc voulu sur une case vide doit être posé
         todo = [(c, r, h) for (c, r), h in target.items()
-                if pixels.get((c, r), [WHITE])[0] != h and not self.queue.is_failed((canvas, c, r), now)]
+                if pixels.get((c, r), [None])[0] != h and not self.queue.is_failed((canvas, c, r), now)]
 
         missing = {l["id"]: 0 for l in layers}
         for c, r, _ in todo:

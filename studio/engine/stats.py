@@ -7,6 +7,7 @@ import threading
 import time
 import zlib
 
+from .. import config
 from .board import ME
 
 
@@ -98,7 +99,7 @@ class StatsTracker:
         now = time.time()
         rows = [_player_row(name, owned.get(name, 0), st.get(name, {}), now) for name in set(owned) | set(st)]
         rows.sort(key=lambda r: (-r["owned"], -r["observed"]))
-        total = board["w"] * board["h"] if board else 0
+        total = len(board.get("zones") or [(0, 0)]) * config.ZONE_SIZE ** 2 if board else 0
         painted = len(board["pixels"]) if board else 0
         summary = {
             "painted": painted,

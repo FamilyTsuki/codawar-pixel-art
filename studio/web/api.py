@@ -186,6 +186,7 @@ class Api:
         board = self.engine.boards.fetch(canvas, max_age=10, cookie=self._cookie(req))
         cells = self.engine.stats.heatmap(canvas)
         return Response({"w": board["w"] if board else 100, "h": board["h"] if board else 100,
+                         "x0": board.get("x0", 0) if board else 0, "y0": board.get("y0", 0) if board else 0,
                          "cells": cells, "max": max((n for *_, n in cells), default=0)})
 
     def timelapse(self, req):
@@ -211,7 +212,9 @@ class Api:
                 oidx[o] = len(owners)
                 owners.append(o)
             cells.extend((c, r, h, oidx[o], prot))
-        return Response({"success": True, "w": board["w"], "h": board["h"], "owners": owners, "cells": cells,
+        return Response({"success": True, "w": board["w"], "h": board["h"],
+                         "x0": board.get("x0", 0), "y0": board.get("y0", 0), "zones": board.get("zones"),
+                         "owners": owners, "cells": cells,
                          "wallet": board["wallet"], "closure": board.get("closure")})
 
     # ---------------------------------------------------------------- moteur

@@ -11,8 +11,10 @@ from ..palette import COLOR_POS
 def encode_grid(board):
     """Grille compressée : 1 octet = index couleur ; 0 = blanc/vide."""
     w, h = board["w"], board["h"]
+    x0, y0 = board.get("x0", 0), board.get("y0", 0)  # coin haut-gauche (peut être négatif)
     grid = bytearray(w * h)
     for (c, r), v in board["pixels"].items():
+        c, r = c - x0, r - y0
         if 0 <= c < w and 0 <= r < h:
             grid[r * w + c] = COLOR_POS.get(v[0], 0) & 0xFF
     return base64.b64encode(zlib.compress(bytes(grid), 6)).decode()

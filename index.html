@@ -439,22 +439,27 @@ async function loadBoard(maxAge = 2) {
   if (!r.success) { toast('Canvas : ' + r.message); return; }
   const map = new Map();
   for (let i = 0; i < r.cells.length; i += 5) map.set(key(r.cells[i], r.cells[i+1]), [r.cells[i+2], r.owners[r.cells[i+3]], r.cells[i+4]]);
-  const first = !S.board || S.board.w !== r.w || S.board.h !== r.h;
-  S.board = { w: r.w, h: r.h, map, closure: r.closure };
+  // coordonnées absolues : un canvas agrandi à gauche / en haut a x0 / y0 négatifs
+  const x0 = r.x0 || 0, y0 = r.y0 || 0, zones = r.zones || [[0, 0]];
+  const old = S.board;
+  const grew = !old || old.w !== r.w || old.h !== r.h || old.x0 !== x0 || old.y0 !== y0 || old.zones.size !== zones.length;
+  S.board = { x0, y0, w: r.w, h: r.h, zones: new Set(zones.map(([zc, zr]) => zc + ',' + zr)), map, closure: r.closure };
   const bi = S.boardImg; bi.width = r.w; bi.height = r.h;
-  const ctx = bi.getContext('2d'); ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, r.w, r.h);
-  for (const [k, v] of map) { const [c, rr] = k.split(','); ctx.fillStyle = v[0]; ctx.fillRect(+c, +rr, 1, 1); }
-  if (first) fit();
+  const ctx = bi.getContext('2d'); ctx.clearRect(0, 0, r.w, r.h); // cases vides = transparentes (damier dessous)
+  for (const [k, v] of map) { const [c, rr] = k.split(','); ctx.fillStyle = v[0]; ctx.fillRect(c - x0, rr - y0, 1, 1); }
+  if (grew) { if (!old || !S.userMoved) fit(); else if (old.w !== r.w || old.h !== r.h) toast('Le canvas s\'est agrandi — touche 0 pour recadrer'); }
   renderLayersList();
   draw();
 }
-const boardColor = (c, r) => (S.board && S.board.map.get(key(c, r)) || ['#ffffff'])[0];
-const inBoard = (c, r) => S.board && c >= 0 && r >= 0 && c < S.board.w && r < S.board.h;
+// null = case vide (jamais peinte) : différente d'une case blanche #ffffff
+const boardColor = (c, r) => (S.board && S.board.map.get(key(c, r)) || [null])[0];
+const ZONE = 100; // taille d'une zone Codawar (config.ZONE_SIZE)
+const inBoard = (c, r) => !!S.board && S.board.zones.has(Math.floor(c / ZONE) + ',' + Math.floor(r / ZONE));
 function setBoardPixel(c, r, h) { // mise à jour optimiste
   if (!S.board) return;
   const old = S.board.map.get(key(c, r));
   S.board.map.set(key(c, r), [h, '(vous)', old ? old[2] : 0]);
-  const ctx = S.boardImg.getContext('2d'); ctx.fillStyle = h; ctx.fillRect(c, r, 1, 1);
+  const ctx = S.boardImg.getContext('2d'); ctx.fillStyle = h; ctx.fillRect(c - S.board.x0, r - S.board.y0, 1, 1);
 }
 
 // ------------------------------------------------------------------ Calques
@@ -697,6 +702,7 @@ $('btnExportPng').onclick = () => {
   if (!S.board) return toast('Canvas pas chargé');
   const cv = document.createElement('canvas'); cv.width = S.board.w; cv.height = S.board.h;
   const ctx = cv.getContext('2d'); ctx.drawImage(S.boardImg, 0, 0);
+  ctx.translate(-S.board.x0, -S.board.y0); // calques en coordonnées absolues
   for (const l of S.layers) { if (l.canvas !== S.canvas || !l.visible) continue; const im = layerImg(l); if (!im.empty) ctx.drawImage(im.cv, l.x + im.x0, l.y + im.y0); }
   cv.toBlob(b => { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = S.canvas + '.png'; a.click(); });
   toast('Image PNG enregistrée');
@@ -723,13 +729,21 @@ function toCell(ev) {
 }
 function fit() {
   if (!S.board || scr.width < 2 || scr.height < 2) return;
-  const z = Math.max(1, Math.floor(Math.min(scr.width / S.board.w, scr.height / S.board.h) * 0.95));
-  S.view = { z, x: (scr.width - S.board.w * z) / 2, y: (scr.height - S.board.h * z) / 2 };
+  const { w, h, x0, y0 } = S.board;
+  const z = Math.max(1, Math.floor(Math.min(scr.width / w, scr.height / h) * 0.95));
+  S.view = { z, x: (scr.width - w * z) / 2 - x0 * z, y: (scr.height - h * z) / 2 - y0 * z };
   S.userMoved = false; draw(); // « Cadrer » remet la vue sous contrôle automatique
 }
 function centerOn(c, r) { S.userMoved = true; S.view.x = scr.width / 2 - c * S.view.z; S.view.y = scr.height / 2 - r * S.view.z; draw(); }
 function viewCenter() { return [Math.floor((scr.width / 2 - S.view.x) / S.view.z), Math.floor((scr.height / 2 - S.view.y) / S.view.z)]; }
 
+function checker() { // motif écran (fixe, indépendant du zoom) pour les cases vides
+  if (checker.p) return checker.p;
+  const c = document.createElement('canvas'); c.width = c.height = 16;
+  const g = c.getContext('2d'); g.fillStyle = '#c8cad0'; g.fillRect(0, 0, 16, 16);
+  g.fillStyle = '#b4b7bf'; g.fillRect(0, 0, 8, 8); g.fillRect(8, 8, 8, 8);
+  return (checker.p = sctx.createPattern(c, 'repeat'));
+}
 let raf = 0;
 function draw() { if (!raf) raf = requestAnimationFrame(() => { raf = 0; paint(); }); }
 function paint() {
@@ -738,8 +752,11 @@ function paint() {
   sctx.fillStyle = '#0c0d10'; sctx.fillRect(0, 0, scr.width, scr.height);
   if (!S.board) return;
   sctx.imageSmoothingEnabled = false;
+  // fond des zones ouvertes : damier = cases vides (non peintes), distinctes du blanc
+  sctx.fillStyle = checker();
+  for (const zk of S.board.zones) { const [zc, zr] = zk.split(',').map(Number); sctx.fillRect(x + zc * ZONE * z, y + zr * ZONE * z, ZONE * z, ZONE * z); }
   sctx.setTransform(z, 0, 0, z, x, y);
-  sctx.drawImage(S.boardImg, 0, 0);
+  sctx.drawImage(S.boardImg, S.board.x0, S.board.y0);
   for (const l of S.layers) {
     if (l.canvas !== S.canvas || !l.visible) continue;
     const im = layerImg(l); if (im.empty) continue;
@@ -761,13 +778,15 @@ function paint() {
   }
   sctx.setTransform(1, 0, 0, 1, 0, 0);
   // grille
+  const bx = x + S.board.x0 * z, by = y + S.board.y0 * z, bw = S.board.w * z, bh = S.board.h * z; // boîte englobante à l'écran
   if (S.grid && z >= 8) {
     sctx.strokeStyle = 'rgba(0,0,0,.18)'; sctx.lineWidth = 1; sctx.beginPath();
-    for (let c = 0; c <= S.board.w; c++) { const X = Math.round(x + c * z) + .5; sctx.moveTo(X, y); sctx.lineTo(X, y + S.board.h * z); }
-    for (let r = 0; r <= S.board.h; r++) { const Y = Math.round(y + r * z) + .5; sctx.moveTo(x, Y); sctx.lineTo(x + S.board.w * z, Y); }
+    for (let c = 0; c <= S.board.w; c++) { const X = Math.round(bx + c * z) + .5; sctx.moveTo(X, by); sctx.lineTo(X, by + bh); }
+    for (let r = 0; r <= S.board.h; r++) { const Y = Math.round(by + r * z) + .5; sctx.moveTo(bx, Y); sctx.lineTo(bx + bw, Y); }
     sctx.stroke();
   }
-  sctx.strokeStyle = '#3a3d48'; sctx.lineWidth = 1; sctx.strokeRect(x - .5, y - .5, S.board.w * z + 1, S.board.h * z + 1);
+  sctx.strokeStyle = '#3a3d48'; sctx.lineWidth = 1;
+  for (const zk of S.board.zones) { const [zc, zr] = zk.split(',').map(Number); sctx.strokeRect(x + zc * ZONE * z - .5, y + zr * ZONE * z - .5, ZONE * z + 1, ZONE * z + 1); }
   // contour du calque sélectionné
   const l = selLayer();
   if (l && l.canvas === S.canvas) {
@@ -822,7 +841,8 @@ function commit(cells, color) {
   if (!cells.length) return;
   if (S.target === 'direct') {
     const h = color || '#ffffff';
-    const px = cells.filter(([c, r]) => boardColor(c, r) !== h).map(([c, r]) => [c, r, h]);
+    // gomme (color null) : repeint en blanc les cases peintes, laisse les cases vides tranquilles
+    const px = cells.filter(([c, r]) => { const b = boardColor(c, r); return b !== h && (color || b); }).map(([c, r]) => [c, r, h]);
     if (!px.length) return;
     // annulation : un trait entier (tant que la souris est enfoncée) = une seule étape
     let u = drag && drag.undo;
@@ -851,7 +871,8 @@ function undo() {
     l._map = u.snap; layerFromMap(l); layerChanged(l); toast('Modification du calque annulée');
   } else if (u.type === 'direct') {
     if (u.canvas !== S.canvas) { S.undo.push(u); updateUndoBtn(); return toast(`Ce dessin est sur « ${u.canvas} » : change de canvas pour l'annuler`); }
-    const px = [...u.old].map(([k, h]) => { const [c, r] = k.split(',').map(Number); return [c, r, h]; });
+    // une case vide ne peut pas être « dé-peinte » : on ne remet que les vraies couleurs
+    const px = [...u.old].filter(([, h]) => h).map(([k, h]) => { const [c, r] = k.split(',').map(Number); return [c, r, h]; });
     px.forEach(([c, r, h]) => setBoardPixel(c, r, h));
     post('/api/place', { canvas: S.canvas, pixels: px, front: true });
     toast(`Dessin annulé : ${px.length} pixel(s) remis comme avant`); draw();
@@ -886,7 +907,7 @@ function poseLayer(l, protect) { // protect = Activer (pose + protection), sinon
 function unpose(l) { // retire le calque du canvas : remet les couleurs d'avant
   if (!l.before || !l.before.length) return toast('Rien à retirer : pas de sauvegarde d\'avant la pose');
   l.active = false;
-  const px = l.before.filter(([c, r, h]) => l.canvas !== S.canvas || boardColor(c, r) !== h);
+  const px = l.before.filter(([c, r, h]) => h && (l.canvas !== S.canvas || boardColor(c, r) !== h)); // case vide avant : rien à remettre
   post('/api/place', { canvas: l.canvas, pixels: px, front: true });
   if (l.canvas === S.canvas) px.forEach(([c, r, h]) => setBoardPixel(c, r, h));
   l.before = null; saveLayer(l, true); renderLayersList(); draw();
@@ -905,7 +926,8 @@ scr.addEventListener('mousedown', e => {
   if (tool === 'pick') {
     const l = selLayer(); let h = null;
     if (S.target === 'layer' && l) h = layerMap(l).get(key(cell[0] - l.x, cell[1] - l.y)) || null;
-    setColor(h || boardColor(...cell)); return;
+    h = h || boardColor(...cell);
+    if (h) setColor(h); else toast('Case vide'); return;
   }
   if (tool === 'fill') {
     const l = selLayer();
@@ -952,7 +974,8 @@ function copyZone(a, b) {
   const cells = rectCells(a, b, true).filter(([c, r]) => inBoard(c, r));
   if (!cells.length) return;
   const x0 = Math.min(a[0], b[0]), y0 = Math.min(a[1], b[1]);
-  newLayer(`Copie ${x0},${y0}`, x0, y0, cells.map(([c, r]) => [c - x0, r - y0, boardColor(c, r)]));
+  // les cases vides ne sont pas copiées (sinon le calque les « protégerait » en blanc)
+  newLayer(`Copie ${x0},${y0}`, x0, y0, cells.filter(([c, r]) => boardColor(c, r)).map(([c, r]) => [c - x0, r - y0, boardColor(c, r)]));
   setTool('move');
   toast(`Zone copiée (${cells.length} px) : déplace-la, ou « Activer » pour la protéger telle quelle`);
 }
@@ -1561,9 +1584,10 @@ async function loadHeatmap() {
     const cv = $('heatCanvas'); cv.width = d.w; cv.height = d.h;
     const ctx = cv.getContext('2d'); ctx.fillStyle = '#0c0d10'; ctx.fillRect(0, 0, d.w, d.h);
     const lm = Math.log(1 + (d.max || 1));
+    const hx = d.x0 || 0, hy = d.y0 || 0;
     for (const [c, r, n] of d.cells) {
       const t = Math.log(1 + n) / lm, R = Math.min(255, t*3*255), G = Math.min(255, Math.max(0, t*3-1)*255), B = Math.min(255, Math.max(0, t*3-2)*255);
-      ctx.fillStyle = `rgb(${R|0},${G|0},${B|0})`; ctx.fillRect(c, r, 1, 1);
+      ctx.fillStyle = `rgb(${R|0},${G|0},${B|0})`; ctx.fillRect(c - hx, r - hy, 1, 1);
     }
     $('heatInfo').textContent = `${d.cells.length} cases · max ${d.max}`;
   } catch {}

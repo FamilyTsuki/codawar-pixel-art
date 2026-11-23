@@ -25,15 +25,32 @@ def parse_board(value, t):
             cells[i + 4],
             cells[i + 5],
         ]
+    # Les zones peuvent avoir des indices négatifs (canvas agrandi à gauche / en haut) :
+    # les coordonnées des pixels sont absolues, la zone (-1, 0) couvre les colonnes -100..-1.
     zones = value.get("zones") or [{"zoneColumn": 0, "zoneRow": 0}]
+    zs = config.ZONE_SIZE
+    cols = [z["zoneColumn"] for z in zones]
+    rows = [z["zoneRow"] for z in zones]
     return {
         "t": t,
-        "w": (max(z["zoneColumn"] for z in zones) + 1) * config.ZONE_SIZE,
-        "h": (max(z["zoneRow"] for z in zones) + 1) * config.ZONE_SIZE,
+        "x0": min(cols) * zs,  # première colonne de la boîte englobante
+        "y0": min(rows) * zs,  # première ligne
+        "w": (max(cols) - min(cols) + 1) * zs,
+        "h": (max(rows) - min(rows) + 1) * zs,
+        "zones": sorted({(z["zoneColumn"], z["zoneRow"]) for z in zones}),
         "pixels": pixels,
         "wallet": value.get("wallet"),
         "closure": value.get("closure"),
     }
+
+
+def in_board(board, c, r):
+    """Vrai si la case (c, r) appartient à une zone ouverte du canvas (forme pas forcément rectangulaire)."""
+    zs = config.ZONE_SIZE
+    zones = board.get("_zone_set")
+    if zones is None:
+        zones = board["_zone_set"] = set(board.get("zones") or [(0, 0)])
+    return (c // zs, r // zs) in zones
 
 
 class BoardCache:
