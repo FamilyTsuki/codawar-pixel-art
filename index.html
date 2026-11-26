@@ -1677,7 +1677,46 @@ CODA</textarea
         l._img = null;
         renderLayersList();
         draw();
+        if (S.imgLayer === l.id) updateStampInfo(); // motif déplacé : coût recalculé
         saveLayer(l);
+      }
+      const REFILL_SEC = 300; // 1 crédit toutes les 5 min (règle Codawar)
+      // Combien de pixels il faudra réellement poser pour un motif placé en (ox, oy) :
+      // on ne compte pas ceux déjà de la bonne couleur sur le canvas.
+      function pixelsToPlace(px, ox, oy) {
+        let todo = 0,
+          out = 0;
+        for (const [dx, dy, h] of px) {
+          const c = ox + dx,
+            r = oy + dy;
+          if (!inBoard(c, r)) {
+            out++;
+            continue;
+          }
+          if (boardColor(c, r) !== h) todo++;
+        }
+        return { todo, out };
+      }
+      // Durée estimée pour poser `rem` pixels avec le compte courant : même règle que
+      // le serveur (crédits disponibles d'abord, puis 1 crédit / 5 min).
+      function etaForPixels(rem) {
+        const s = S.status || {};
+        if (!rem) return 0;
+        const speed = Math.max(s.rate || 0, 2); // pixels/s tant qu'il reste des crédits
+        if (s.unlimited) return rem / speed;
+        if (s.credits == null) return null;
+        const credits = Math.max(0, s.credits);
+        if (rem <= credits) return rem / speed;
+        const first = s.nextCredit != null ? s.nextCredit : REFILL_SEC;
+        return credits / speed + first + (rem - credits - 1) * REFILL_SEC;
+      }
+      // Texte commun : « 412 à poser · ~34 h » (+ pixels hors canvas s'il y en a)
+      function costText(todo, out) {
+        const e = etaForPixels(todo);
+        return (
+          (todo ? `${todo} à poser` + (e != null ? ` · ~${fmtDur(e)}` : " · ~?") : "rien à poser") +
+          (out ? ` · ${out} hors canvas` : "")
+        );
       }
       function layerStats(l) {
         let total = 0,
@@ -1709,6 +1748,14 @@ CODA</textarea
         saveLayer(l, true);
         renderLayersList();
         draw();
+        // à la création : combien de pixels il faudra poser, et le temps estimé
+        if (pixels.length) {
+          const { todo, out } = pixelsToPlace(pixels, l.x, l.y);
+          toast(
+            `« ${name} » créé : ${pixels.length} pixel(s), ` +
+              costText(todo, out),
+          );
+        } else toast(`« ${name} » créé (vide)`);
         return l;
       }
       // temps estimé pour poser `rem` pixels, selon solde + rechargement (1 crédit = 1 pixel)
@@ -1868,6 +1915,14 @@ CODA</textarea
                     const e = etaText(rem, l.id);
                     state = ` · ${rem} à poser${e ? " · ~" + e : ""}${blocked ? " — " + blocked : ""}`;
                   } else state = " · à jour";
+                } else {
+                  // calque pas encore activé : ce qu'il coûtera si on l'active
+                  const left = st.total - st.ok;
+                  state = st.total
+                    ? left
+                      ? " · " + costText(left, 0)
+                      : " · à jour"
+                    : " · vide";
                 }
                 return `<div class="layer ${l.id === S.sel ? "sel" : ""}" data-id="${l.id}">
       <div class="top">
@@ -2679,6 +2734,7 @@ CODA</textarea
         if (!S.hover || S.hover[0] !== cell[0] || S.hover[1] !== cell[1]) {
           S.hover = cell;
           showHover();
+          if (S.placing) updateStampInfo(); // le motif suit la souris : coût recalculé
           draw();
         }
         if (!drag) return;
@@ -3025,6 +3081,32 @@ CODA</textarea
             .map((p) => (S.swap[p[2]] ? [p[0], p[1], S.swap[p[2]]] : p));
         makeGhost();
         renderSwapUI();
+        updateStampInfo(S.stamp === "text" && !imgLayerPx.length ? "texte vide" : null);
+      }
+      // origine du motif en cours : calque en réglage, sinon position sous la souris
+      function stampOrigin() {
+        if (S.imgLayer) {
+          const l = S.layers.find((x) => x.id === S.imgLayer);
+          return l ? [l.x, l.y] : null;
+        }
+        if (S.placing && S.hover && imgDims)
+          return [S.hover[0] - (imgDims[0] >> 1), S.hover[1] - (imgDims[1] >> 1)];
+        return null;
+      }
+      function updateStampInfo(note) {
+        if (note) {
+          $("iInfo").textContent = note;
+          return;
+        }
+        if (!imgLayerPx || !imgDims) return;
+        const [W, H] = imgDims;
+        let txt = `${W}×${H} · ${imgLayerPx.length} pixel(s)`;
+        const o = stampOrigin();
+        if (o) {
+          const { todo, out } = pixelsToPlace(imgLayerPx, o[0], o[1]);
+          txt += " · " + costText(todo, out);
+        }
+        $("iInfo").textContent = txt;
       }
       function makeGhost() {
         const g = document.createElement("canvas");
@@ -3247,6 +3329,7 @@ CODA</textarea
         $("ibTitle").textContent =
           "Glisse pour ajuster (ou flèches), règle, puis Appliquer";
         $("ibApply").disabled = $("ibOnce").disabled = false;
+        updateStampInfo();
       }
       // barre image/texte déplaçable : glisse son titre pour la sortir du passage
       (function () {
@@ -3484,9 +3567,7 @@ CODA</textarea
         tc.putImageData(id, 0, 0);
         S.ghost = sm; // aperçu qui suit la souris
         imgDims = [W, H];
-        const rate = S.status && S.status.rate > 1 ? S.status.rate : 40;
-        $("iInfo").textContent =
-          `${W}×${H} · ${imgLayerPx.length} pixels · ~${Math.ceil(imgLayerPx.length / rate / 60)} min`;
+        updateStampInfo();
       }
 
       // ------------------------------------------------------------------ Texte
@@ -3679,9 +3760,7 @@ CODA</textarea
           gc.fillRect(x, y, 1, 1);
         }
         S.ghost = g;
-        $("iInfo").textContent = text.trim()
-          ? `${W}×${H} · ${imgLayerPx.length} pixels`
-          : "texte vide";
+        updateStampInfo(text.trim() ? null : "texte vide");
       }
       function buildTextPalette() {
         $("txtPal").innerHTML = PALETTE.map(
