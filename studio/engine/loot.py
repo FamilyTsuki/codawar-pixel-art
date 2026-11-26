@@ -108,8 +108,11 @@ class LootService:
         if not self.pacer.wait_turn(cookie):
             return {"status": "rejected", "code": "PACED_OUT",
                     "message": "cadence maximale atteinte, réessaie dans un instant"}
-        res = self._call(cookie, "onUseTool", [canvas, tool, int(col), int(row), str(uuid.uuid4()), False],
-                         file=config.TELEFUNC_FILE, page=f"/canvas/{canvas}", canvas=canvas)
+        try:
+            res = self._call(cookie, "onUseTool", [canvas, tool, int(col), int(row), str(uuid.uuid4()), False],
+                             file=config.TELEFUNC_FILE, page=f"/canvas/{canvas}", canvas=canvas)
+        finally:
+            self.pacer.release(cookie)
         code = res.get("code") or ""
         if res.get("status") == "success":
             self.journal.log(f"{ITEM_NAMES.get(tool, tool)} utilisée en ({col}, {row}) sur « {canvas} »", "warning",

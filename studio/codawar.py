@@ -61,6 +61,11 @@ class CodawarClient:
         for attempt in range(2):  # 2e essai si la connexion réutilisée a été fermée
             try:
                 return self._post(body, headers, timeout)
+            except TimeoutError as e:
+                # pas de 2e essai : Codawar a peut-être déjà reçu la requête, la renvoyer
+                # ferait une pose de plus hors cadence (avertissement « plus de 3 pixels/s »)
+                self._reset_connection()
+                return _error(str(e))
             except (http.client.HTTPException, OSError) as e:
                 self._reset_connection()
                 if attempt == 1:

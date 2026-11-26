@@ -57,6 +57,10 @@ DESTRUCTION_TOOLS = {"pickaxe": 0, "dynamite": 1, "bomb": 2, "napalm": None, "nu
 # sinon avertissement puis exclusion 15 min. On espace les départs d'au moins 0,5 s
 # (2/s, jamais plus de 2 poses sur une même seconde) : marge de sécurité sous la limite.
 PLACE_MIN_INTERVAL = 0.5
+# Codawar compte les poses à leur ARRIVÉE : deux requêtes parties à 0,5 s d'écart peuvent
+# arriver groupées si la latence varie. Donc une seule requête en vol par compte, et un
+# délai après chaque réponse : 4 arrivées s'étalent alors toujours sur plus d'une seconde.
+PLACE_GAP_AFTER_RESPONSE = 0.4
 TIMEOUT_PAUSE = 15 * 60 + 30  # exclusion STUDENT_TIMED_OUT : on ne renvoie rien avant la fin
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko)"
 CANVASES_CACHE_TTL = 60

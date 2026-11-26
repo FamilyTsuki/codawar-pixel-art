@@ -18,24 +18,41 @@ class AccountPacer:
         self._last = {}    # cookie -> départ de la dernière action
         self._pause = {}   # cookie -> fin d'une exclusion / interdiction
         self._expired = set()  # cookies refusés par Codawar (SESSION_EXPIRED) : inutilisables
+        self._busy = set()     # cookies avec une action en vol (une seule à la fois)
+        self._end = {}         # cookie -> fin (réponse reçue) de la dernière action
 
     def blocked(self, cookie, now=None):
         """Vrai si ce compte ne doit envoyer aucune action maintenant."""
         now = time.time() if now is None else now
         with self._lock:
-            return (cookie in self._expired
-                    or self._pause.get(cookie, 0) > now
-                    or now - self._last.get(cookie, 0) < config.PLACE_MIN_INTERVAL)
+            return self._blocked(cookie, now)
+
+    def _blocked(self, cookie, now):
+        """Verrou déjà pris."""
+        return (cookie in self._expired
+                or cookie in self._busy
+                or self._pause.get(cookie, 0) > now
+                or now - self._last.get(cookie, 0) < config.PLACE_MIN_INTERVAL
+                or now - self._end.get(cookie, 0) < config.PLACE_GAP_AFTER_RESPONSE)
 
     def reserve(self, cookie, now=None):
-        """Réserve un créneau ; False si le compte est bloqué (rien n'est réservé)."""
+        """Réserve un créneau ; False si le compte est bloqué (rien n'est réservé).
+
+        Un créneau réservé DOIT être rendu par release() une fois la réponse reçue.
+        """
         now = time.time() if now is None else now
         with self._lock:
-            if (cookie in self._expired or self._pause.get(cookie, 0) > now
-                    or now - self._last.get(cookie, 0) < config.PLACE_MIN_INTERVAL):
+            if self._blocked(cookie, now):
                 return False
             self._last[cookie] = now
+            self._busy.add(cookie)
             return True
+
+    def release(self, cookie):
+        """Réponse reçue : le compte peut repartir après PLACE_GAP_AFTER_RESPONSE."""
+        with self._lock:
+            self._busy.discard(cookie)
+            self._end[cookie] = time.time()
 
     def wait_turn(self, cookie, timeout=30):
         """Attend un créneau libre pour une action manuelle ; False si le compte reste bloqué."""

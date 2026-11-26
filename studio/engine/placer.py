@@ -142,10 +142,14 @@ class Placer:
             return None
         with self._lock:  # verrou tenu pendant le choix : le décompte des crédits en cours reste juste
             item = self.queue.pop(self._blocked)
-            if item is not None:
-                self.inflight += 1
-                self._inflight_by[bucket_of(*item)] += 1
-                self.pacer.reserve(item[1][2])  # compte pour la limite de cadence
+            if item is None:
+                return None
+            # un outil de destruction a pu prendre le créneau entre-temps : on remet le pixel
+            if not self.pacer.reserve(item[1][2]):
+                self.queue.add_if_absent(*item, front=True)
+                return None
+            self.inflight += 1
+            self._inflight_by[bucket_of(*item)] += 1
         return item
 
     def worker(self):
@@ -158,6 +162,7 @@ class Placer:
             try:
                 self._place(key, val)
             finally:
+                self.pacer.release(val[2])  # réponse reçue : libère le créneau du compte
                 with self._lock:
                     self.inflight -= 1
                     b = bucket_of(key, val)
