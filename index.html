@@ -230,6 +230,78 @@
         border-radius: 0 2px 2px 0;
         background: var(--acc);
       }
+      /* groupes d'outils : un bouton qui ouvre un menu sur le côté */
+      #tools .tgroup {
+        position: relative;
+      }
+      #tools .tg-btn::after {
+        content: "";
+        position: absolute;
+        right: 4px;
+        bottom: 4px;
+        border: 4px solid transparent;
+        border-right-color: var(--mute);
+        border-bottom-color: var(--mute);
+      }
+      #tools .tg-menu,
+      .dd-menu {
+        position: absolute;
+        z-index: 50;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 5px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+      }
+      #tools .tg-menu {
+        left: calc(100% + 8px);
+        top: 0;
+      }
+      #tools .tg-menu button,
+      .dd-menu button {
+        width: auto;
+        min-width: 160px;
+        height: 32px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        padding: 0 10px;
+        text-align: left;
+        border-color: transparent;
+        background: transparent;
+      }
+      #tools .tg-menu button:hover,
+      .dd-menu button:hover {
+        background: var(--line);
+      }
+      #tools .tg-menu button small {
+        display: inline;
+      }
+      #tools .tg-menu button.on::before {
+        top: 6px;
+        bottom: 6px;
+      }
+      .dd {
+        position: relative;
+        display: inline-flex;
+      }
+      .dd-menu {
+        top: calc(100% + 4px);
+        left: 0;
+      }
+      .dd-menu.right {
+        left: auto;
+        right: 0;
+      }
+      .dd-menu hr {
+        border: 0;
+        border-top: 1px solid var(--line);
+        margin: 3px 0;
+      }
       #tools hr {
         border: 0;
         border-top: 1px solid var(--line);
@@ -813,53 +885,35 @@
       </nav>
 
       <nav id="tools">
-        <button data-tool="paint" title="Pinceau (B)">
-          Pinceau<small>B</small>
-        </button>
-        <button data-tool="line" title="Ligne (L)">
-          Ligne<small>L</small>
-        </button>
-        <button data-tool="rect" title="Rectangle (R) — Maj pour plein">
-          Rect<small>R</small>
-        </button>
-        <button
-          data-tool="ellipse"
-          title="Cercle / ellipse (C) — Maj pour plein"
-        >
-          Cercle<small>C</small>
-        </button>
-        <button data-tool="fill" title="Remplissage (G)">
-          Remplir<small>G</small>
-        </button>
-        <button data-tool="pick" title="Pipette (I) — ou Alt+clic">
-          Pipette<small>I</small>
-        </button>
-        <button data-tool="erase" title="Gomme (E)">
-          Gomme<small>E</small>
-        </button>
-        <button data-tool="move" title="Déplacer le calque (M)">
-          Bouger<small>M</small>
-        </button>
-        <button
-          data-tool="select"
-          title="Copier une zone du canvas en calque (S)"
-        >
-          Copier<small>S</small>
-        </button>
-        <button
-          data-tool="grab"
-          title="Copier-coller une zone du calque sélectionné (K)"
-        >
-          Couper<small>K</small>
-        </button>
-        <button id="toolText" title="Écrire du texte (X)">
-          Texte<small>X</small>
-        </button>
+        <div class="tgroup" data-group="draw">
+          <button class="tg-btn" title="Outils de dessin">Pinceau<small>B</small></button>
+          <div class="tg-menu" hidden>
+            <button data-tool="paint" title="Pinceau (B)">Pinceau<small>B</small></button>
+            <button data-tool="line" title="Ligne (L)">Ligne<small>L</small></button>
+            <button data-tool="rect" title="Rectangle (R) — Maj pour plein">Rectangle<small>R</small></button>
+            <button data-tool="ellipse" title="Cercle / ellipse (C) — Maj pour plein">Cercle<small>C</small></button>
+            <button data-tool="fill" title="Remplissage (G)">Remplir<small>G</small></button>
+          </div>
+        </div>
+        <button data-tool="erase" title="Gomme (E)">Gomme<small>E</small></button>
+        <button data-tool="pick" title="Pipette (I) — ou Alt+clic">Pipette<small>I</small></button>
+        <button data-tool="move" title="Déplacer le calque (M)">Bouger<small>M</small></button>
+        <div class="tgroup" data-group="zone">
+          <button class="tg-btn" title="Zones et texte">Zone<small>S K X</small></button>
+          <div class="tg-menu" hidden>
+            <button data-tool="select" title="Copier une zone du canvas en calque (S)">Copier du canvas<small>S</small></button>
+            <button data-tool="grab" title="Copier-coller une zone du calque sélectionné (K)">Couper du calque<small>K</small></button>
+            <button id="toolText" title="Écrire du texte (X)">Texte…<small>X</small></button>
+          </div>
+        </div>
         <hr />
-        <button id="btnFit" title="Tout voir (0)">
-          Cadrer<small>0</small>
-        </button>
-        <button id="btnGrid" title="Grille (H)">Grille<small>H</small></button>
+        <div class="tgroup" data-group="view">
+          <button class="tg-btn" title="Affichage">Vue<small>0 H</small></button>
+          <div class="tg-menu" hidden>
+            <button id="btnFit" title="Tout voir (0)">Cadrer<small>0</small></button>
+            <button id="btnGrid" title="Grille (H)">Grille<small>H</small></button>
+          </div>
+        </div>
         <hr />
         <button id="btnUndo" title="Annuler (Ctrl+Z)" disabled>
           Annuler<small>Ctrl+Z</small>
@@ -1750,29 +1804,42 @@ CODA</textarea
       <div class="meta">${st.ok}/${st.total} corrects · pos. ${l.x}, ${l.y}${state}</div>
       <div class="acts">
         <button data-a="active" class="${l.active ? "on" : ""}" title="Poser puis protéger en continu">${l.active ? "Actif" : "Activer"}</button>
-        <button data-a="vis" class="${l.visible ? "" : ""}">${l.visible ? "Masquer" : "Afficher"}</button>
-        <button data-a="once" title="Envoyer une seule fois les pixels faux, sans protection">Poser 1×</button>
-        ${l.before && l.before.length ? '<button data-a="unpose" class="danger" title="Remettre le canvas comme avant la pose de ce calque">Retirer du canvas</button>' : ""}
-        <button data-a="up" title="Monter">↑</button><button data-a="down" title="Descendre">↓</button>
-        <button data-a="goto">Voir</button>
-        <button data-a="rotate" title="Pivoter 90°">Pivoter</button>
-        <button data-a="fliph" title="Retourner horizontalement">Miroir ↔</button>
-        <button data-a="flipv" title="Retourner verticalement">Miroir ↕</button>
-        <button data-a="resize" title="Redimensionner le calque">Taille</button>
-        <button data-a="merge" title="Fusionner avec le calque juste en dessous">Fusionner ↓</button>
-        <button data-a="dup">Dupliquer</button>
-        <button data-a="sprite" title="Enregistrer dans la bibliothèque">Sprite</button>
-        <button data-a="export">Exporter</button>
+        <button data-a="vis">${l.visible ? "Masquer" : "Afficher"}</button>
+        <button data-a="goto" title="Centrer la vue sur le calque">Voir</button>
+        ${layerMenu(l, "pose", "Poser ▾", `
+          <button data-a="once" title="Envoyer une seule fois les pixels faux, sans protection">Poser une fois</button>
+          ${l.before && l.before.length ? '<button data-a="unpose" class="danger" title="Remettre le canvas comme avant la pose de ce calque">Retirer du canvas</button>' : ""}`)}
+        ${layerMenu(l, "xform", "Transformer ▾", `
+          <button data-a="rotate">Pivoter 90°</button>
+          <button data-a="fliph">Miroir ↔</button>
+          <button data-a="flipv">Miroir ↕</button>
+          <button data-a="resize">Taille…</button>`)}
+        ${layerMenu(l, "more", "⋯", `
+          <button data-a="up">Monter ↑</button>
+          <button data-a="down">Descendre ↓</button>
+          <button data-a="merge" title="Fusionner avec le calque juste en dessous">Fusionner ↓</button>
+          <button data-a="dup">Dupliquer</button>
+          <button data-a="sprite" title="Enregistrer dans la bibliothèque">Enregistrer en sprite</button>
+          <button data-a="export">Exporter</button>
+          <hr />
+          <button data-a="del" class="danger">Supprimer…</button>`, true)}
         ${
           S.confirmDel === l.id
             ? '<button data-a="del" class="danger on" style="background:var(--err);border-color:var(--err)">Confirmer la suppression</button><button data-a="nodel">Non</button>'
-            : '<button data-a="del" class="danger">Suppr.</button>'
+            : ""
         }
       </div>
     </div>`;
               })
               .join("")
           : '<div class="hint">Aucun calque sur ce canvas.</div>';
+      }
+      // menu déroulant d'un calque (état gardé dans S.layerMenu : la liste est souvent redessinée)
+      function layerMenu(l, name, label, items, right) {
+        const open = S.layerMenu === l.id + ":" + name;
+        return `<span class="dd"><button data-a="menu" data-m="${name}" class="${open ? "on" : ""}">${label}</button>${
+          open ? `<div class="dd-menu${right ? " right" : ""}">${items}</div>` : ""
+        }</span>`;
       }
       $("layers").addEventListener("click", (e) => {
         const el = e.target.closest(".layer");
@@ -1781,6 +1848,16 @@ CODA</textarea
         if (!l) return;
         const a = e.target.dataset.a;
         if (a) e.target.blur();
+        if (a === "menu") {
+          const k = l.id + ":" + e.target.dataset.m;
+          S.layerMenu = S.layerMenu === k ? null : k;
+          renderLayersList();
+          return;
+        }
+        if (a && S.layerMenu) {
+          S.layerMenu = null; // action choisie : le menu se referme
+          renderLayersList();
+        }
         if (
           e.target.type === "radio" ||
           (!a && !e.target.classList.contains("name"))
@@ -2680,6 +2757,13 @@ CODA</textarea
         document
           .querySelectorAll("#tools [data-tool]")
           .forEach((b) => b.classList.toggle("on", b.dataset.tool === t));
+        // le bouton d'un groupe affiche l'outil choisi dedans
+        document.querySelectorAll("#tools .tgroup").forEach((g) => {
+          const cur = g.querySelector(`.tg-menu [data-tool="${t}"]`),
+            btn = g.querySelector(".tg-btn");
+          btn.classList.toggle("on", !!cur);
+          if (cur && g.dataset.group === "draw") btn.innerHTML = cur.innerHTML;
+        });
         scr.style.cursor = t === "move" ? "move" : "crosshair";
       }
       function setTarget(t) {
@@ -2688,9 +2772,38 @@ CODA</textarea
         $("tDirect").classList.toggle("on", t === "direct");
         $("tLayer").classList.toggle("on", t === "layer");
       }
+      function closeToolMenus(except) {
+        document
+          .querySelectorAll("#tools .tg-menu")
+          .forEach((m) => m !== except && (m.hidden = true));
+      }
       $("tools").addEventListener("click", (e) => {
+        const g = e.target.closest(".tg-btn");
+        if (g) {
+          const m = g.parentElement.querySelector(".tg-menu");
+          closeToolMenus(m);
+          m.hidden = !m.hidden;
+          return;
+        }
         const b = e.target.closest("[data-tool]");
         if (b) setTool(b.dataset.tool);
+        if (e.target.closest(".tg-menu")) closeToolMenus(); // choix fait : on referme
+      });
+      // clic ailleurs ou Échap : ferme les menus (outils et calques)
+      document.addEventListener("click", (e) => {
+        if (!e.target.closest("#tools .tgroup")) closeToolMenus();
+        if (S.layerMenu && !e.target.closest(".dd")) {
+          S.layerMenu = null;
+          renderLayersList();
+        }
+      });
+      document.addEventListener("keydown", (e) => {
+        if (e.key !== "Escape") return;
+        closeToolMenus();
+        if (S.layerMenu) {
+          S.layerMenu = null;
+          renderLayersList();
+        }
       });
       $("tDirect").onclick = () => setTarget("direct");
       $("tLayer").onclick = () => setTarget("layer");
