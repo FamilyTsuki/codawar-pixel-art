@@ -131,11 +131,6 @@ class PixelQueue:
         with self._lock:
             return self._failed.get(key, 0) >= now
 
-    def buckets(self):
-        """{lot: nb de pixels}."""
-        with self._lock:
-            return {b: len(items) for b, items in self._buckets.items()}
-
     def count_for(self, canvas):
         with self._lock:
             return sum(len(items) for b, items in self._buckets.items() if b[0] == canvas)

@@ -230,6 +230,33 @@
         border-radius: 0 2px 2px 0;
         background: var(--acc);
       }
+      .loot-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 10px;
+      }
+      .loot-card {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+      .loot-inv {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .loot-inv .item {
+        padding: 5px 10px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        font-size: 13px;
+      }
+      .loot-inv .item b {
+        color: var(--acc);
+      }
       /* groupes d'outils : un bouton qui ouvre un menu sur le côté */
       #tools .tgroup {
         position: relative;
@@ -875,6 +902,7 @@
           <button data-tab="stats">Stats</button>
           <button data-tab="history">Historique</button>
           <button data-tab="settings">Réglages</button>
+          <button data-tab="loot">Coffres</button>
           <button data-tab="log">Journal</button>
         </div>
         <div class="nav-actions">
@@ -905,6 +933,10 @@
             <button data-tool="grab" title="Copier-coller une zone du calque sélectionné (K)">Couper du calque<small>K</small></button>
             <button id="toolText" title="Écrire du texte (X)">Texte…<small>X</small></button>
           </div>
+        </div>
+        <div class="tgroup" data-group="destroy">
+          <button class="tg-btn" title="Outils de destruction (inventaire Codawar)">Casser<small>coffres</small></button>
+          <div class="tg-menu" hidden id="destroyMenu"></div>
         </div>
         <hr />
         <div class="tgroup" data-group="view">
@@ -1266,14 +1298,6 @@ CODA</textarea
           <section>
             <h2>Réglages</h2>
             <div class="row">
-              <label>Requêtes parallèles</label
-              ><input type="number" id="sWorkers" min="1" max="16" />
-            </div>
-            <div class="row">
-              <label>Délai / requête (s)</label
-              ><input type="number" id="sDelay" min="0" step="0.1" />
-            </div>
-            <div class="row">
               <label>Vérif. calques toutes les (s)</label
               ><input type="number" id="sGuard" min="3" />
             </div>
@@ -1312,6 +1336,54 @@ CODA</textarea
             <div class="row">
               <span class="hint">Stockage : <b id="sBackend">…</b></span>
             </div>
+          </section>
+        </div>
+
+        <div class="tab" data-tab="loot">
+          <section>
+            <h2>
+              Coffres & bits <span class="grow"></span
+              ><span id="lootBits" class="chip"></span
+              ><button id="lootRefresh" style="padding: 3px 9px">Rafraîchir</button>
+            </h2>
+            <div id="lootWarn" class="hint" style="color: var(--err)"></div>
+            <div class="loot-grid">
+              <div class="loot-card">
+                <b>Coffre quotidien</b>
+                <span id="lootDaily" class="hint"></span>
+                <button data-claim="daily">Ouvrir</button>
+              </div>
+              <div class="loot-card">
+                <b>Coffre toutes les 2 h</b>
+                <span id="lootHourly" class="hint"></span>
+                <button data-claim="hourly">Ouvrir</button>
+              </div>
+              <div class="loot-card">
+                <b>Lootbox</b>
+                <span id="lootPrice" class="hint"></span>
+                <div class="row" style="gap: 6px">
+                  <button id="lootOpen1">Ouvrir 1</button>
+                  <button id="lootOpenMany" title="Mode « Multi ouvertures » requis">Ouvrir plusieurs</button>
+                </div>
+              </div>
+            </div>
+            <label class="row" style="margin-top: 10px; gap: 8px">
+              <input type="checkbox" id="lootAuto" /> Ouvrir automatiquement les
+              coffres dès qu'ils sont disponibles (vérifié chaque minute, tous les
+              comptes)
+            </label>
+          </section>
+          <section>
+            <h2>Inventaire</h2>
+            <div id="lootInv" class="loot-inv"></div>
+            <div class="hint">
+              Les outils de destruction s'utilisent sur la carte : barre d'outils →
+              <b>Casser</b>. Ils ne touchent jamais les pixels de tes alliés.
+            </div>
+          </section>
+          <section>
+            <h2>Derniers gains</h2>
+            <div id="lootLast" class="hint">—</div>
           </section>
         </div>
 
@@ -1432,6 +1504,8 @@ CODA</textarea
           body: JSON.stringify(body || {}),
         }).then((r) => r.json());
       const key = (c, r) => c + "," + r;
+      const escHtml = (v) =>
+        String(v).replace(/[&<>"']/g, (ch) => "&#" + ch.charCodeAt(0) + ";");
       function toast(msg) {
         const t = $("toast");
         t.textContent = msg;
@@ -2261,6 +2335,21 @@ CODA</textarea
             sctx.setLineDash([]);
           }
         }
+        // aperçu de la zone d'un outil de destruction
+        if (S.hover && S.tool === "destroy" && S.destroyTool) {
+          const armed = S.destroyArm && Date.now() - S.destroyArm.t < 5000;
+          sctx.fillStyle = armed ? "rgba(255,40,40,0.55)" : "rgba(255,60,60,0.3)";
+          for (const [c, r] of destroyCells(S.destroyTool, ...S.hover))
+            sctx.fillRect(x + c * z, y + r * z, z, z);
+          if ((S.loot?.tools || {})[S.destroyTool] == null) {
+            sctx.strokeStyle = "rgba(255,60,60,0.8)";
+            sctx.setLineDash([4, 4]);
+            sctx.beginPath();
+            sctx.arc(x + (S.hover[0] + 0.5) * z, y + (S.hover[1] + 0.5) * z, 5 * z, 0, 2 * Math.PI);
+            sctx.stroke();
+            sctx.setLineDash([]);
+          }
+        }
         // case survolée
         if (S.hover) {
           const [c, r] = S.hover;
@@ -2537,6 +2626,10 @@ CODA</textarea
           return;
         }
         const tool = e.altKey ? "pick" : S.tool;
+        if (tool === "destroy") {
+          useDestroy(cell);
+          return;
+        }
         if (tool === "pick") {
           const l = selLayer();
           let h = null;
@@ -2763,6 +2856,10 @@ CODA</textarea
             btn = g.querySelector(".tg-btn");
           btn.classList.toggle("on", !!cur);
           if (cur && g.dataset.group === "draw") btn.innerHTML = cur.innerHTML;
+          if (g.dataset.group === "destroy")
+            btn.innerHTML = cur
+              ? `${itemName(S.destroyTool)}<small>casser</small>`
+              : "Casser<small>coffres</small>";
         });
         scr.style.cursor = t === "move" ? "move" : "crosshair";
       }
@@ -2786,7 +2883,9 @@ CODA</textarea
           return;
         }
         const b = e.target.closest("[data-tool]");
+        if (b && b.dataset.dt) S.destroyTool = b.dataset.dt;
         if (b) setTool(b.dataset.tool);
+        if (b && b.dataset.dt) renderDestroyMenu();
         if (e.target.closest(".tg-menu")) closeToolMenus(); // choix fait : on referme
       });
       // clic ailleurs ou Échap : ferme les menus (outils et calques)
@@ -3201,46 +3300,6 @@ CODA</textarea
         setTool("paint");
       };
 
-      function kmeans(pts, k) {
-        if (pts.length <= k) return pts;
-        const d2 = (a, b) =>
-          (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2;
-        const sample =
-          pts.length > 4000
-            ? pts.filter((_, i) => i % Math.ceil(pts.length / 4000) === 0)
-            : pts;
-        const C = [sample[Math.floor(Math.random() * sample.length)].slice()];
-        while (C.length < k) {
-          const ds = sample.map((p) => Math.min(...C.map((c) => d2(p, c))));
-          let r = Math.random() * ds.reduce((a, b) => a + b, 0),
-            i = 0;
-          for (; i < ds.length - 1 && (r -= ds[i]) > 0; i++);
-          C.push(sample[i].slice());
-        }
-        for (let it = 0; it < 12; it++) {
-          const sum = C.map(() => [0, 0, 0, 0]);
-          for (const p of sample) {
-            let best = 0,
-              bd = Infinity;
-            for (let j = 0; j < C.length; j++) {
-              const d = d2(p, C[j]);
-              if (d < bd) {
-                bd = d;
-                best = j;
-              }
-            }
-            const s = sum[best];
-            s[0] += p[0];
-            s[1] += p[1];
-            s[2] += p[2];
-            s[3]++;
-          }
-          sum.forEach((s, j) => {
-            if (s[3]) C[j] = [s[0] / s[3], s[1] / s[3], s[2] / s[3]];
-          });
-        }
-        return C;
-      }
 
       // détourage : remplissage depuis les bords, en suivant les voisins proches (gère les fonds dégradés)
       function removeBackground(d, W, H, tol) {
@@ -3644,6 +3703,135 @@ CODA</textarea
       }
       $("btnText").onclick = openText;
 
+      // ------------------------------------------------------------------ Coffres, inventaire, outils de destruction
+      const ITEM_NAMES = {
+        pickaxe: "Pioche", dynamite: "Dynamite", bomb: "Bombe", napalm: "Napalm", nuke: "Nuke",
+        "alliance-stone": "Pierre d'alliance", "mask-auto": "Masque auto",
+        "fast-opening": "Ouverture rapide", "multi-opening": "Multi ouvertures",
+        pencil: "Crayon", brush: "Pinceau", line: "Trait", text: "Texte",
+      };
+      const DESTROY_ORDER = ["pickaxe", "dynamite", "bomb", "napalm", "nuke"];
+      const itemName = (id) => ITEM_NAMES[id] || id;
+      S.loot = null;
+      async function loadLoot(fresh) {
+        try {
+          const d = await fetch("/api/loot" + (fresh ? "?fresh=1" : "")).then((r) => r.json());
+          if (d.auth === false) return;
+          if (!d.success) {
+            $("lootWarn").textContent = d.message || "coffres illisibles";
+            return;
+          }
+          S.loot = { ...d, at: Date.now() / 1000 };
+          renderLoot();
+        } catch {}
+      }
+      function lootQty(id) {
+        const it = ((S.loot || {}).overview?.inventory || []).find((x) => x.itemId === id);
+        return it ? it.quantity : 0;
+      }
+      function chestText(c) {
+        if (!c) return "–";
+        if (c.isAvailable) return "disponible";
+        const left = (Date.parse(c.availableAt) - Date.now()) / 1000;
+        return `dans ${fmtDur(Math.max(0, left))}` +
+          (c.remainingToday != null ? ` · ${c.remainingToday} restant(s) aujourd'hui` : "");
+      }
+      function renderLoot() {
+        const L = S.loot;
+        if (!L) return;
+        const ov = L.overview || {}, pl = L.player || {};
+        $("lootBits").textContent = `${ov.balance ?? "?"} bits`;
+        $("lootWarn").textContent = pl.mustAcceptRules
+          ? "Règles à accepter sur le site avant de pouvoir jouer."
+          : ov.isTimedOut || pl.timeout
+            ? "Compte exclu temporairement (trop de poses trop vite)."
+            : "";
+        $("lootDaily").textContent = chestText(ov.dailyChest);
+        $("lootHourly").textContent = chestText(ov.hourlyChest);
+        document.querySelector('[data-claim="daily"]').disabled = !ov.dailyChest?.isAvailable;
+        document.querySelector('[data-claim="hourly"]').disabled = !ov.hourlyChest?.isAvailable;
+        $("lootPrice").textContent = `${ov.price ?? "?"} bits l'ouverture`;
+        $("lootOpen1").disabled = (ov.balance ?? 0) < (ov.price ?? Infinity);
+        $("lootOpenMany").disabled =
+          $("lootOpen1").disabled || !(ov.modes || []).includes("multi-opening");
+        const inv = (ov.inventory || []).filter((x) => x.quantity > 0);
+        const modes = ov.modes || [];
+        $("lootInv").innerHTML =
+          inv.map((x) => `<span class="item">${escHtml(itemName(x.itemId))} <b>×${x.quantity}</b></span>`).join("") +
+          modes.map((m) => `<span class="item">${escHtml(itemName(m))} <b>mode</b></span>`).join("") ||
+          '<span class="hint">Inventaire vide.</span>';
+        renderDestroyMenu();
+      }
+      function renderDestroyMenu() {
+        $("destroyMenu").innerHTML = DESTROY_ORDER.map((id) => {
+          const n = lootQty(id),
+            r = (S.loot?.tools || {})[id];
+          const zone = r == null ? "zone aléatoire" : `${2 * r * r + 2 * r + 1} case(s)`;
+          return `<button data-tool="destroy" data-dt="${id}" ${n ? "" : "disabled"}
+            class="${S.tool === "destroy" && S.destroyTool === id ? "on" : ""}"
+            title="${zone}">${itemName(id)}<small>×${n}</small></button>`;
+        }).join("");
+      }
+      // cases touchées (losange de rayon r autour de la case visée, comme le site)
+      function destroyCells(id, c, r) {
+        const rad = (S.loot?.tools || {})[id];
+        if (rad == null) return [[c, r]];
+        const out = [];
+        for (let dy = -rad; dy <= rad; dy++) {
+          const w = rad - Math.abs(dy);
+          for (let dx = -w; dx <= w; dx++) out.push([c + dx, r + dy]);
+        }
+        return out;
+      }
+      async function useDestroy(cell) {
+        const id = S.destroyTool;
+        if (!id || !lootQty(id)) return toast("Plus de " + itemName(id || "outil") + " dans l'inventaire");
+        const armed = S.destroyArm;
+        if (!armed || armed.id !== id || armed.c !== cell[0] || armed.r !== cell[1] || Date.now() - armed.t > 5000) {
+          S.destroyArm = { id, c: cell[0], r: cell[1], t: Date.now() };
+          return toast(`${itemName(id)} en (${cell[0]}, ${cell[1]}) : clique encore pour confirmer`);
+        }
+        S.destroyArm = null;
+        const res = await post("/api/tool/use", { tool: id, col: cell[0], row: cell[1], canvas: S.canvas });
+        if (res.status === "success") toast(`${itemName(id)} utilisée`);
+        else toast(`${itemName(id)} refusée : ${res.message || res.code || "erreur"}`);
+        loadLoot(true);
+        loadBoard(0);
+      }
+      document.querySelectorAll("[data-claim]").forEach((b) => {
+        b.onclick = async () => {
+          b.disabled = true;
+          const res = await post("/api/loot/claim", { kind: b.dataset.claim });
+          showLootResult(res);
+          loadLoot(true);
+        };
+      });
+      $("lootOpen1").onclick = async () => showLootResult(await post("/api/loot/open", {}), true);
+      $("lootOpenMany").onclick = async () => showLootResult(await post("/api/loot/open", { many: true }), true);
+      function showLootResult(res, reload) {
+        if (res.status !== "success") {
+          toast(res.message || res.code || "refusé");
+        } else {
+          const v = res.value || {},
+            rw = v.rewards || (v.reward ? [v.reward] : []);
+          const txt = rw.map((x) => {
+            const id = x.itemId || x.toolId || x.towerTypeId || x.kind,
+              q = x.quantity || x.bits || x.amount;
+            return itemName(id) + (q && q !== 1 ? " ×" + q : "");
+          });
+          if (v.bitsGained) txt.push(v.bitsGained + " bits");
+          $("lootLast").textContent = `${new Date().toLocaleTimeString("fr")} : ${txt.join(", ") || "rien"}`;
+          toast("Gagné : " + (txt.join(", ") || "rien"));
+        }
+        if (reload) loadLoot(true);
+      }
+      $("lootRefresh").onclick = () => loadLoot(true);
+      $("lootAuto").onchange = (e) => post("/api/settings", { autoChests: e.target.checked });
+      setInterval(() => {
+        if (document.querySelector('.tab[data-tab="loot"]').classList.contains("sel")) renderLoot();
+      }, 1000); // comptes à rebours des coffres
+      setInterval(() => loadLoot(false), 60000);
+
       // ------------------------------------------------------------------ Onglets
       const CANVAS_TABS = ["draw", "layers"]; // onglets qui ont besoin de la carte
       function setTab(t) {
@@ -3662,6 +3850,7 @@ CODA</textarea
           const l = $("log");
           l.scrollTop = l.scrollHeight;
         }
+        if (t === "loot") loadLoot(true);
         if (t === "history") loadHistory();
         else stopPlay();
       }
@@ -3682,8 +3871,6 @@ CODA</textarea
         const r = await fetch("/api/layers").then((r) => r.json());
         S.layers = r.layers;
         const s = r.settings;
-        $("sWorkers").value = s.workers;
-        $("sDelay").value = s.delay;
         $("sGuard").value = s.guardInterval;
         $("sOrder").value = s.order;
         $("sCookie").value = r.cookie || "";
@@ -3692,6 +3879,8 @@ CODA</textarea
         $("sSchedFrom").value = s.scheduleFrom || "00:00";
         $("sSchedTo").value = s.scheduleTo || "23:59";
         $("sVandal").value = s.vandalThreshold ?? 12;
+        $("lootAuto").checked = s.autoChests !== false;
+        loadLoot(false);
         $("sBackend").textContent =
           r.backend === "postgres"
             ? "PostgreSQL"
@@ -3707,8 +3896,6 @@ CODA</textarea
       }
       $("btnSaveSettings").onclick = async () => {
         await post("/api/settings", {
-          workers: +$("sWorkers").value,
-          delay: +$("sDelay").value,
           guardInterval: +$("sGuard").value,
           order: $("sOrder").value,
           scheduleOn: $("sSchedOn").checked,

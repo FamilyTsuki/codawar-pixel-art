@@ -42,14 +42,18 @@ class CodawarClient:
         self.host = host
         self._local = threading.local()
 
-    def call(self, name, args, cookie, canvas, timeout=15):
-        """Renvoie le champ "ret" de la réponse, ou {"status": "error", "message": ...}."""
-        body = json.dumps({"file": config.TELEFUNC_FILE, "name": name, "args": args}).encode("utf-8")
+    def call(self, name, args, cookie, canvas, timeout=15, file=None, page=None):
+        """Renvoie le champ "ret" de la réponse, ou {"status": "error", "message": ...}.
+
+        file : module telefunc (canvas par défaut, config.TELEFUNC_LOOTBOX pour les coffres…)
+        page : chemin de la page d'origine (Referer) ; /canvas/<canvas> par défaut.
+        """
+        body = json.dumps({"file": file or config.TELEFUNC_FILE, "name": name, "args": args}).encode("utf-8")
         headers = {
             "Content-Type": "text/plain",
             "x-telefunc-request": "txt",
             "Origin": f"https://{self.host}",
-            "Referer": f"https://{self.host}/canvas/{canvas}",
+            "Referer": f"https://{self.host}{page or '/canvas/' + canvas}",
             "Cookie": cookie,
             "User-Agent": config.USER_AGENT,
             "Connection": "keep-alive",
@@ -87,12 +91,40 @@ class CodawarClient:
 
     def canvas_page(self, cookie, canvas):
         """HTML de la page d'un canvas (contient le pageContext)."""
+        return self.page(cookie, f"/canvas/{canvas}")
+
+    def page(self, cookie, path):
         conn = http.client.HTTPSConnection(self.host, timeout=15)
         try:
-            conn.request("GET", f"/canvas/{canvas}", headers={"Cookie": cookie, "User-Agent": "Mozilla/5.0"})
+            conn.request("GET", path, headers={"Cookie": cookie, "User-Agent": "Mozilla/5.0"})
             return conn.getresponse().read().decode("utf-8", "replace")
         finally:
             conn.close()
+
+    def page_data(self, cookie, path):
+        """Champ "data" du pageContext d'une page du site (dates « !Date:… » converties en texte ISO)."""
+        return page_context_data(self.page(cookie, path))
+
+
+def page_context_data(html):
+    for m in re.finditer(r'<script[^>]*type="application/json"[^>]*>(.*?)</script>', html, re.S):
+        try:
+            ctx = json.loads(m.group(1))
+        except ValueError:
+            continue
+        if isinstance(ctx, dict) and isinstance(ctx.get("data"), dict):
+            return _strip_dates(ctx["data"])
+    return None
+
+
+def _strip_dates(o):
+    if isinstance(o, dict):
+        return {k: _strip_dates(v) for k, v in o.items()}
+    if isinstance(o, list):
+        return [_strip_dates(v) for v in o]
+    if isinstance(o, str) and o.startswith("!Date:"):
+        return o[6:]
+    return o
 
 
 def _error(message):

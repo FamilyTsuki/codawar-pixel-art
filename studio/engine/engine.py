@@ -10,6 +10,7 @@ from .cookies import CookieResolver
 from .defense import DefenseMode
 from .guard import Guard
 from .journal import Journal
+from .loot import LootService
 from .pixel_queue import PixelQueue, SOURCE_MANUAL
 from .placer import Placer
 from .snapshots import Snapshotter
@@ -32,20 +33,22 @@ class Engine:
         self.boards.subscribe(self.stats.observe)
         self.queue = PixelQueue()
         self.defense = DefenseMode()
-        self.placer = Placer(client, self.queue, self.boards, self.wallet, self.defense, self.journal, settings)
+        self.placer = Placer(client, self.queue, self.boards, self.wallet, self.journal, settings)
         self.placer.restore_counters(runtime)
         self.guard = Guard(store, self.boards, self.queue, self.defense, self.journal,
                            directory, self.cookies, settings)
         self.snapshotter = Snapshotter(self.boards, store)
+        self.loot = LootService(client, store, self.journal, settings)
 
     # -- tâches de fond
     def start(self):
-        for i in range(config.MAX_WORKERS):
-            _spawn(self.placer.worker, i)
+        for _ in range(config.WORKERS):
+            _spawn(self.placer.worker)
         _spawn(self.guard.loop)
         _spawn(self._persist_loop)
         _spawn(self._stats_loop)
         _spawn(self.snapshotter.loop)
+        _spawn(self.loot.loop)
 
     def _persist_loop(self):
         while True:

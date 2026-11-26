@@ -34,10 +34,6 @@ class Journal:
         self.log(msg, level)
         return True
 
-    def reset_throttle(self, key):
-        with self._lock:
-            self._throttle.pop(key, None)
-
     def entries(self):
         with self._lock:
             return list(self._entries)

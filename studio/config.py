@@ -44,6 +44,11 @@ TELEFUNC_HOST = "codawar.coda.school"
 TELEFUNC_PATH = "/_telefunc?_telefunc=txt"
 TELEFUNC_FILE = "/src/modules/canvas/infrastructure/browser-canvas-gateway.telefunc.ts"
 SYNC_FUNCTION = "onSynchronizePackedCanvas"  # ex-onSynchronizeCanvas (supprimée par le site)
+TELEFUNC_LOOTBOX = "/src/modules/lootbox/infrastructure/browser-lootbox-gateway.telefunc.ts"
+LOOT_INTERVAL = 60        # vérification des coffres disponibles (s)
+LOOT_CACHE_TTL = 20       # cache de la page /coffres (s)
+# Outils de destruction : rayon du losange touché (napalm : zone aléatoire décidée par le serveur)
+DESTRUCTION_TOOLS = {"pickaxe": 0, "dynamite": 1, "bomb": 2, "napalm": None, "nuke": 5}
 
 # Cadence des poses, PAR COMPTE (tous canvas confondus). Règle Codawar : 3 pixels/s au maximum,
 # sinon avertissement puis exclusion 15 min. On espace les départs d'au moins 0,5 s
@@ -57,7 +62,7 @@ DEFAULT_CANVAS = "playtest-sandbox"
 ZONE_SIZE = 100
 
 # ---------------------------------------------------------------- Moteur
-MAX_WORKERS = 16
+WORKERS = 4  # requêtes de pose en parallèle (la cadence par compte est bornée par PLACE_MIN_INTERVAL)
 LOG_SIZE = 300
 PERSIST_INTERVAL = 10                                   # sauvegarde de l'état d'exécution
 STATS_INTERVAL = _env_int("STATS_INTERVAL", 15)         # relecture pour construire les stats 24/24
@@ -75,16 +80,14 @@ CREDIT_SHORT_HINTS = ("insufficient", "credit", "balance", "empty")
 DEFAULT_SETTINGS = {
     "cookie": DEFAULT_COOKIE,
     "canvas": DEFAULT_CANVAS,
-    "workers": 4,
-    "delay": 0.0,
     "guardInterval": 8,       # relecture normale du canvas
     "defendInterval": 2,      # relecture rapide tant qu'un calque est attaqué
-    "defendWorkers": 8,       # requêtes parallèles en mode défense
     "order": "rows",          # rows | random
     "scheduleOn": False,      # minuteur de pose : ne poser que dans une plage horaire
     "scheduleFrom": "00:00",
     "scheduleTo": "23:59",
     "vandalThreshold": 12,    # pixels écrasés d'un coup sur un calque actif = alerte
+    "autoChests": True,       # ouvre les coffres quotidien / 2 h dès qu'ils sont disponibles
 }
 
 # ---------------------------------------------------------------- Mise à jour auto (git pull)

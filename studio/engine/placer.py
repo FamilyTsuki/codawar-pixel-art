@@ -20,12 +20,11 @@ def _has_hint(code, hints):
 
 
 class Placer:
-    def __init__(self, client, queue, boards, wallet, defense, journal, settings):
+    def __init__(self, client, queue, boards, wallet, journal, settings):
         self.client = client
         self.queue = queue
         self.boards = boards
         self.wallet = wallet
-        self.defense = defense
         self.journal = journal
         self.settings = settings  # callable -> dict des réglages
         self._lock = threading.Lock()
@@ -34,7 +33,6 @@ class Placer:
         self._inflight_by = collections.Counter()  # lot -> requêtes en cours
         self.inflight = 0
         self.placed = self.skipped = self.errors = 0
-        self.last_reject = None      # dernier refus/erreur : {code, message, t, canvas}
         self._reject_by_canvas = {}  # canvas -> dernier refus/erreur
         self._recent = collections.deque()  # (timestamp, canvas) des poses (débit)
         self._starts = {}  # cookie -> départ de la dernière pose (limite 3 px/s)
@@ -99,12 +97,6 @@ class Placer:
         self.errors = runtime.get("errors", 0)
 
     # -- boucle d'un worker
-    def _active_workers(self):
-        s = self.settings()
-        active = int(s.get("workers", 1))
-        if self.defense.active():  # mode défense : plus de requêtes en parallèle
-            active = max(active, int(s.get("defendWorkers", 8)))
-        return active
 
     def _take(self):
         if not self.can_post():
@@ -117,11 +109,8 @@ class Placer:
                 self._starts[item[1][2]] = time.time()  # compte pour la limite de cadence
         return item
 
-    def worker(self, idx):
+    def worker(self):
         while True:
-            if idx >= self._active_workers():
-                time.sleep(0.3)
-                continue
             item = self._take()
             if item is None:
                 time.sleep(0.2)
@@ -136,9 +125,6 @@ class Placer:
                     self._inflight_by[b] -= 1
                     if self._inflight_by[b] <= 0:
                         del self._inflight_by[b]
-            delay = float(self.settings().get("delay", 0) or 0)
-            if delay and not self.defense.active():  # pas de pause en mode défense
-                time.sleep(delay)
 
     # -- une pose
     def _place(self, key, val):
@@ -193,7 +179,6 @@ class Placer:
         reject = {"code": code or "réseau", "message": res.get("message", ""), "t": time.time(), "canvas": canvas}
         with self._lock:
             self._backoff[bucket] = max(self._backoff.get(bucket, 0), time.time() + wait)
-            self.last_reject = reject
             self._reject_by_canvas[canvas] = reject
         # une ligne par canvas et par type d'erreur au plus toutes les 30 min (pas de spam)
         if credit_short:
@@ -213,15 +198,10 @@ class Placer:
         reject = {"code": code, "message": res.get("message", ""), "t": time.time(), "canvas": key[0]}
         with self._lock:
             self._account_pause[cookie] = time.time() + wait
-            self.last_reject = reject
             self._reject_by_canvas[key[0]] = reject
         self.journal.log_throttled(("stop", cookie[-8:], code),
                                    f"Compte arrêté ({code}) : aucune pose pendant {wait // 60} min — {res.get('message', '')}",
                                    "error", every=600)
-
-    def account_pause_remaining(self, cookie):
-        with self._lock:
-            return max(0, round(self._account_pause.get(cookie, 0) - time.time()))
 
     def _on_refused(self, key, color, code, res):
         """Refus définitif : on n'insiste pas sur cette case pendant un moment."""
@@ -230,7 +210,6 @@ class Placer:
         reject = {"code": code, "message": res.get("message", ""), "t": time.time(), "canvas": canvas}
         with self._lock:
             self.errors += 1
-            self.last_reject = reject
             self._reject_by_canvas[canvas] = reject
         self.journal.log_throttled(("refus", canvas, code),
                                    f"Refusé sur « {canvas} » ({col}, {row}) {color} : {code} — {res.get('message', '')}",

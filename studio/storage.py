@@ -364,7 +364,8 @@ class Store:
             for k in config.DEFAULT_SETTINGS:
                 if k in values and k != "cookie":  # le cookie est par compte
                     self.settings[k] = values[k]
-            self.settings["workers"] = max(1, min(config.MAX_WORKERS, int(self.settings["workers"])))
+            for k in [k for k in self.settings if k not in config.DEFAULT_SETTINGS]:
+                del self.settings[k]  # anciens réglages supprimés (workers, delay, defendWorkers…)
             self.save()
             return self.settings
 

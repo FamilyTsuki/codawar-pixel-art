@@ -75,6 +75,10 @@ ROUTES = {
     ("POST", "/api/layers/save"): Route("save_layer"),
     ("POST", "/api/layers/delete"): Route("delete_layer"),
     ("POST", "/api/layers/reorder"): Route("reorder_layers"),
+    ("GET", "/api/loot"): Route("loot"),
+    ("POST", "/api/loot/claim"): Route("loot_claim"),
+    ("POST", "/api/loot/open"): Route("loot_open"),
+    ("POST", "/api/tool/use"): Route("tool_use"),
 }
 
 
@@ -159,6 +163,36 @@ class Api:
         return Response({"success": True, "hasCookie": bool(u.get("cookie")), "canvas": u.get("canvas")})
 
     # ---------------------------------------------------------------- lecture
+    # ---------------------------------------------------------------- coffres / inventaire / outils
+    def loot(self, req):
+        data = self.engine.loot.overview(self._cookie(req), max_age=0 if req.query.get("fresh") else config.LOOT_CACHE_TTL)
+        if not data:
+            return Response({"success": False, "message": "page /coffres illisible (cookie Codawar ?)"})
+        player = data.get("player") or {}
+        return Response({"success": True, "overview": data.get("overview"),
+                         "player": {k: player.get(k) for k in ("nickname", "timeout", "ban", "mustAcceptRules")},
+                         "tools": config.DESTRUCTION_TOOLS})
+
+    def loot_claim(self, req):
+        kind = req.body.get("kind")
+        if kind not in ("daily", "hourly"):
+            return fail(400, "kind = daily | hourly")
+        return Response(self.engine.loot.claim(self._cookie(req), kind))
+
+    def loot_open(self, req):
+        return Response(self.engine.loot.open_lootboxes(self._cookie(req), bool(req.body.get("many"))))
+
+    def tool_use(self, req):
+        tool = req.body.get("tool")
+        if tool not in config.DESTRUCTION_TOOLS:
+            return fail(400, "outil inconnu")
+        try:
+            col, row = int(req.body["col"]), int(req.body["row"])
+        except (KeyError, TypeError, ValueError):
+            return fail(400, "case invalide")
+        return Response(self.engine.loot.use_tool(self._cookie(req), self._canvas(req, req.body.get("canvas")),
+                                                  tool, col, row))
+
     def canvases(self, req):
         lst = self.directory.list(self._cookie(req), self._canvas(req))
         return Response({"success": lst is not None, "canvases": lst or []})
