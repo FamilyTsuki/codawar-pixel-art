@@ -288,6 +288,57 @@
       .prj .no-cookie {
         color: var(--warn);
       }
+      #modal {
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.55);
+        padding: 16px;
+      }
+      .modal-card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 20px;
+        width: 100%;
+        max-width: 460px;
+        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+      }
+      .modal-card h2 {
+        margin: 0 0 12px;
+      }
+      .modal-card ol {
+        margin: 0 0 12px;
+        padding-left: 20px;
+        color: var(--mute);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      .modal-card input[type="password"],
+      .modal-card input[type="text"] {
+        width: 100%;
+        margin: 6px 0;
+      }
+      .modal-row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-top: 12px;
+        flex-wrap: wrap;
+      }
+      .modal-note {
+        font-size: 13px;
+        margin: 8px 0;
+      }
+      .modal-note.ok {
+        color: var(--ok);
+      }
+      .modal-note.err {
+        color: var(--err);
+      }
       .loot-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
@@ -927,6 +978,12 @@
         </div>
       </form>
     </div>
+    <div id="modal" hidden>
+      <div class="modal-card">
+        <h2 id="mTitle">Configure ton cookie Codawar</h2>
+        <div id="mBody"></div>
+      </div>
+    </div>
     <div id="app" hidden>
       <header>
         <h1>Codawar Pixel Studio</h1>
@@ -1386,7 +1443,9 @@ CODA</textarea
                 type="password"
                 style="flex: 1; min-width: 0"
                 placeholder="codawar_session=…"
-              />
+              /><button id="sCookieWizard" type="button" title="Assistant guidé">
+                Assistant…
+              </button>
             </div>
             <div class="row">
               <button id="btnSaveSettings">Enregistrer</button
@@ -1589,6 +1648,28 @@ CODA</textarea
       const key = (c, r) => c + "," + r;
       const escHtml = (v) =>
         String(v).replace(/[&<>"']/g, (ch) => "&#" + ch.charCodeAt(0) + ";");
+      function copyText(txt) {
+        // navigator.clipboard échoue hors HTTPS ; repli sur un textarea + execCommand
+        try {
+          if (navigator.clipboard) {
+            navigator.clipboard.writeText(txt).catch(() => fallbackCopy(txt));
+            return;
+          }
+        } catch {}
+        fallbackCopy(txt);
+      }
+      function fallbackCopy(txt) {
+        const ta = document.createElement("textarea");
+        ta.value = txt;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+          document.execCommand("copy");
+        } catch {}
+        ta.remove();
+      }
       function toast(msg) {
         const t = $("toast");
         t.textContent = msg;
@@ -3922,6 +4003,26 @@ CODA</textarea
           renderLayersList(); // le menu « Projet » de chaque calque en dépend
         } catch {}
       }
+      // liens d'invitation actifs d'un projet (vus par le créateur seul)
+      function linkList(p) {
+        const links = (p.links || []).filter((l) => l.valid);
+        if (!links.length) return "";
+        return (
+          '<div class="hint" style="margin-top:8px">Liens actifs :</div>' +
+          links
+            .map((l) => {
+              const url = location.origin + "/#invite=" + l.token;
+              return `<div class="row" style="gap:6px;margin-top:4px">
+      <input readonly value="${escHtml(url)}" style="flex:1;min-width:140px;font-size:12px"
+        onclick="this.select()">
+      <span class="hint">${l.uses}/${l.maxUses}</span>
+      <button data-p="copy" data-url="${escHtml(url)}">Copier</button>
+      <button data-p="revoke" data-id="${p.id}" data-token="${escHtml(l.token)}" class="danger">Révoquer</button>
+    </div>`;
+            })
+            .join("")
+        );
+      }
       function renderProjects() {
         if (!S.projects.length) {
           $("prjList").innerHTML =
@@ -3963,9 +4064,10 @@ CODA</textarea
         ? `<div class="row">
       <input data-p="who" data-id="${p.id}" placeholder="pseudo à inviter" style="flex:1;min-width:140px">
       <button data-p="invite" data-id="${p.id}">Inviter</button>
+      <button data-p="link" data-id="${p.id}">Lien d'invitation</button>
       <button data-p="rename" data-id="${p.id}">Renommer</button>
       <button data-p="del" data-id="${p.id}" class="danger">Supprimer</button>
-    </div>`
+    </div>${linkList(p)}`
         : '<div class="hint">Tu es membre : tes crédits servent à poser et défendre ce projet.</div>'
     }
   </div>`;
@@ -3977,6 +4079,26 @@ CODA</textarea
         if (!b) return;
         const id = b.dataset.id,
           act = b.dataset.p;
+        if (act === "link") {
+          const r = await post("/api/projects/link", { id, maxUses: 10 });
+          if (!r.success) return toast(r.message || "refusé");
+          const url = location.origin + "/#invite=" + r.link.token;
+          copyText(url);
+          toast("Lien d'invitation copié (valable 7 jours, 10 usages)");
+          loadProjects();
+          return;
+        }
+        if (act === "copy") {
+          copyText(b.dataset.url);
+          toast("Lien copié");
+          return;
+        }
+        if (act === "revoke") {
+          await post("/api/projects/link/revoke", { id, token: b.dataset.token });
+          toast("Lien révoqué");
+          loadProjects();
+          return;
+        }
         if (act === "invite") {
           const who = $("prjList")
             .querySelector(`[data-p="who"][data-id="${id}"]`)
@@ -4020,6 +4142,7 @@ CODA</textarea
         loadProjects();
       };
       $("prjRefresh").onclick = loadProjects;
+      $("sCookieWizard").onclick = () => openCookieWizard(false);
 
       // ------------------------------------------------------------------ Coffres, inventaire, outils de destruction
       const ITEM_NAMES = {
@@ -4197,6 +4320,7 @@ CODA</textarea
         $("sOrder").value = s.order;
         // le serveur ne renvoie plus le cookie : champ vide = on garde celui en place
         $("sCookie").value = "";
+        S.cookieSet = !!r.cookieSet;
         $("sCookie").placeholder = r.cookieSet
           ? `cookie en place (…${r.cookieHint}) — laisser vide pour le garder`
           : "colle ici ton cookie codawar_session";
@@ -4716,7 +4840,158 @@ CODA</textarea
           if (location.hash === "#text") setTimeout(openText, 400); // lien direct outil texte
           if (location.hash === "#history")
             setTimeout(() => setTab("history"), 300);
+          onboard(); // assistant cookie pour les nouveaux, puis invitation éventuelle
         });
+      }
+
+      // ------------------------------------------------------------------ Modale : assistant cookie + invitations
+      function showModal(title, html) {
+        $("mTitle").textContent = title;
+        $("mBody").innerHTML = html;
+        $("modal").hidden = false;
+      }
+      function closeModal() {
+        $("modal").hidden = true;
+      }
+      // jeton d'invitation dans l'URL : #invite=… ou ?invite=…
+      function inviteToken() {
+        const h = new URLSearchParams(location.hash.replace(/^#/, ""));
+        if (h.get("invite")) return h.get("invite");
+        return new URLSearchParams(location.search).get("invite") || null;
+      }
+      function clearInviteFromUrl() {
+        history.replaceState(null, "", location.pathname);
+      }
+
+      // Assistant de première connexion : guide Jean pour coller son cookie Codawar.
+      function openCookieWizard(force) {
+        showModal("Connecte ton compte Codawar", `
+          <div class="modal-note">
+            Pour poser des pixels, le studio a besoin de ton cookie de session Codawar.
+            Il reste sur le serveur et ne quitte jamais ton compte.
+          </div>
+          <ol>
+            <li>Ouvre <b>codawar.coda.school</b> et connecte-toi.</li>
+            <li>Ouvre les outils développeur (<b>F12</b>) → onglet <b>Application</b>
+              (ou <b>Stockage</b>) → <b>Cookies</b>.</li>
+            <li>Copie la valeur de <b>codawar_session</b>.</li>
+            <li>Colle-la ci-dessous.</li>
+          </ol>
+          <input id="mCookie" type="password" placeholder="codawar_session=… (ou juste la valeur)" autocomplete="off">
+          <div id="mCookieNote" class="modal-note"></div>
+          <div class="modal-row">
+            <button id="mCookieTest">Vérifier</button>
+            <button id="mCookieSave" class="cta" disabled>Enregistrer</button>
+            <span style="flex:1"></span>
+            <button id="mCookieSkip">${force ? "Plus tard" : "Fermer"}</button>
+          </div>`);
+        let okValue = null;
+        const note = (msg, cls) => {
+          const n = $("mCookieNote");
+          n.textContent = msg;
+          n.className = "modal-note " + (cls || "");
+        };
+        $("mCookieTest").onclick = async () => {
+          const v = $("mCookie").value.trim();
+          if (!v) return note("Colle d'abord ton cookie.", "err");
+          note("Vérification…");
+          const r = await post("/api/cookie/test", { cookie: v, canvas: S.canvas });
+          if (r.success) {
+            okValue = v;
+            $("mCookieSave").disabled = false;
+            note(
+              `Cookie valide — ${r.nickname || "compte"} · ${
+                r.unlimited ? "crédits illimités" : (r.credits ?? "?") + " crédits"
+              }${r.mustAcceptRules ? " · règles à accepter sur le site" : ""}`,
+              "ok",
+            );
+          } else {
+            okValue = null;
+            $("mCookieSave").disabled = true;
+            note(r.message || "Cookie refusé.", "err");
+          }
+        };
+        $("mCookieSave").onclick = async () => {
+          const acc = await post("/api/account", { cookie: okValue || $("mCookie").value.trim() });
+          if (acc && acc.success === false) return note(acc.message || "échec", "err");
+          toast("Cookie Codawar enregistré");
+          closeModal();
+          loadServerState();
+          afterCookie();
+        };
+        $("mCookieSkip").onclick = () => {
+          closeModal();
+          afterCookie();
+        };
+      }
+
+      // après l'assistant cookie : s'il y a une invitation en attente, on l'enchaîne
+      function afterCookie() {
+        if (S.pendingInvite) openInvite(S.pendingInvite);
+      }
+      // à l'ouverture d'une session : guider le nouveau sur le cookie, puis l'invitation
+      function onboard() {
+        const token = inviteToken();
+        if (token) S.pendingInvite = token;
+        if (!S.cookieSet) openCookieWizard(true); // pas de cookie : assistant d'abord
+        else if (token) openInvite(token);
+      }
+
+      // Invitation à un projet reçue par lien.
+      async function openInvite(token) {
+        S.pendingInvite = token;
+        const d = await fetch("/api/invite?token=" + encodeURIComponent(token)).then((r) => r.json());
+        if (!d.success) {
+          showModal("Invitation", `
+            <div class="modal-note err">${escHtml(d.message || "lien invalide")}</div>
+            <div class="modal-row"><button id="mClose" class="cta">Fermer</button></div>`);
+          $("mClose").onclick = () => {
+            S.pendingInvite = null;
+            clearInviteFromUrl();
+            closeModal();
+          };
+          return;
+        }
+        if (d.already) {
+          toast(`Tu es déjà membre de « ${d.name} »`);
+          S.pendingInvite = null;
+          clearInviteFromUrl();
+          closeModal();
+          return;
+        }
+        showModal("Invitation à un projet", `
+          <div class="modal-note">
+            Tu es invité à rejoindre <b>${escHtml(d.name)}</b> sur le canvas
+            <b>${escHtml(d.canvas)}</b> (${d.members} membre(s)).
+          </div>
+          <div class="modal-note">
+            En rejoignant, tu verras et modifieras les calques du projet, et tes
+            crédits Codawar serviront à les poser et les défendre.
+          </div>
+          <div id="mInviteNote" class="modal-note"></div>
+          <div class="modal-row">
+            <button id="mJoin" class="cta">Rejoindre</button>
+            <button id="mDecline">Non merci</button>
+          </div>`);
+        $("mJoin").onclick = async () => {
+          const r = await post("/api/invite/accept", { token });
+          if (!r.success) {
+            $("mInviteNote").textContent = r.message || "échec";
+            $("mInviteNote").className = "modal-note err";
+            return;
+          }
+          toast(`Bienvenue dans « ${r.project.name} »`);
+          S.pendingInvite = null;
+          clearInviteFromUrl();
+          closeModal();
+          loadProjects();
+          loadServerState();
+        };
+        $("mDecline").onclick = () => {
+          S.pendingInvite = null;
+          clearInviteFromUrl();
+          closeModal();
+        };
       }
 
       // ------------------------------------------------------------------ Démarrage
@@ -4734,8 +5009,11 @@ CODA</textarea
           S.prefs = me.prefs || {}; // préférences du compte (coffres auto…)
           startApp();
         } else {
-          setAuthMode("login");
+          setAuthMode(inviteToken() ? "register" : "login");
           showAuth();
+          if (inviteToken())
+            $("aErr").textContent =
+              "Crée un compte ou connecte-toi pour rejoindre le projet partagé.";
         }
       })();
     </script>

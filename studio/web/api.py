@@ -81,6 +81,11 @@ ROUTES = {
     ("POST", "/api/projects/invite"): Route("project_invite"),
     ("POST", "/api/projects/remove"): Route("project_remove"),
     ("POST", "/api/projects/delete"): Route("project_delete"),
+    ("GET", "/api/invite"): Route("invite_peek", auth=False),
+    ("POST", "/api/cookie/test"): Route("cookie_test"),
+    ("POST", "/api/invite/accept"): Route("invite_accept"),
+    ("POST", "/api/projects/link"): Route("project_link"),
+    ("POST", "/api/projects/link/revoke"): Route("project_link_revoke"),
     ("POST", "/api/layers/project"): Route("layer_project"),
     ("GET", "/api/loot"): Route("loot"),
     ("POST", "/api/loot/claim"): Route("loot_claim"),
@@ -169,6 +174,37 @@ class Api:
             self.directory.learn_async(u["cookie"], u["canvas"])
         return Response({"success": True, "hasCookie": bool(u.get("cookie")), "canvas": u.get("canvas")})
 
+    def cookie_test(self, req):
+        """Vérifie un cookie auprès de Codawar et renvoie le pseudo reconnu.
+
+        Sert à l'assistant de première connexion : on sait tout de suite si le cookie
+        marche, au lieu de le découvrir plus tard dans le journal. Le cookie lui-même
+        n'est jamais renvoyé, seulement ce qu'il permet de lire.
+        """
+        raw = req.body.get("cookie")
+        if raw:
+            try:
+                cookie = normalize_cookie(raw)
+            except ValueError as e:
+                return Response({"success": False, "message": str(e)})
+        else:
+            cookie = self._cookie(req)
+        if not cookie:
+            return Response({"success": False, "message": "aucun cookie à tester"})
+        canvas = self._canvas(req, req.body.get("canvas"))
+        res = self.engine.boards.client.call(config.SYNC_FUNCTION, [canvas], cookie, canvas, timeout=20)
+        if res.get("status") != "success":
+            return Response({"success": False,
+                             "message": res.get("message") or res.get("code")
+                             or "cookie refusé par Codawar"})
+        wallet = (res.get("value") or {}).get("wallet") or {}
+        player = (self.engine.loot.overview(cookie, max_age=0) or {}).get("player") or {}
+        return Response({"success": True, "canvas": canvas,
+                         "nickname": player.get("nickname"),
+                         "credits": wallet.get("balance"),
+                         "unlimited": bool(wallet.get("isUnlimited")),
+                         "mustAcceptRules": bool(player.get("mustAcceptRules"))})
+
     # ---------------------------------------------------------------- lecture
     # ---------------------------------------------------------------- projets de groupe
     def _project_view(self, p, uid):
@@ -184,8 +220,11 @@ class Api:
                             "unlimited": bool((acc or {}).get("unlimited"))})
         layers = [l for l in self.store.layers if l.get("project") == p["id"]]
         pooled = sum(m["credits"] or 0 for m in members)
+        links = [{"token": l["token"], "uses": l["uses"], "maxUses": l["maxUses"],
+                  "expires": l["expires"], "valid": l["valid"]}
+                 for l in self.store.project_links(p["id"], uid)]
         return {"id": p["id"], "name": p["name"], "canvas": p["canvas"],
-                "owner": p["owner"], "isOwner": p["owner"] == uid,
+                "owner": p["owner"], "isOwner": p["owner"] == uid, "links": links,
                 "members": members, "layers": len(layers),
                 "pooledCredits": pooled,
                 "unlimited": any(m["unlimited"] for m in members)}
@@ -228,6 +267,42 @@ class Api:
             return fail(403, "seul le créateur peut supprimer")
         self.engine.guard.drop_targets()
         return ok()
+
+    def project_link(self, req):
+        """Crée un lien d'invitation (le créateur seul)."""
+        link, err = self.store.project_invite_link(
+            req.body.get("id"), req.user["id"], int(req.body.get("maxUses") or 10))
+        if err:
+            return Response({"success": False, "message": err})
+        return Response({"success": True, "link": link})
+
+    def project_link_revoke(self, req):
+        okr = self.store.project_revoke_link(req.body.get("id"), req.user["id"], req.body.get("token"))
+        return Response({"success": okr}) if okr else fail(403, "seul le créateur peut révoquer")
+
+    def invite_peek(self, req):
+        """Aperçu d'une invitation AVANT connexion : juste de quoi décider d'entrer.
+
+        Volontairement pauvre (nom du projet, canvas, nombre de membres) : le jeton
+        circule par message, il ne doit rien révéler de plus sur le groupe.
+        """
+        found, err = self.store.find_invite(req.query.get("token"))
+        if err:
+            return Response({"success": False, "message": err})
+        p, _link = found
+        user = self.store.session_user(req.sid)
+        return Response({"success": True, "name": p["name"], "canvas": p["canvas"],
+                         "members": len(p.get("members", [])),
+                         "authed": bool(user),
+                         "already": bool(user and user["id"] in p.get("members", []))})
+
+    def invite_accept(self, req):
+        p, err = self.store.redeem_invite(req.body.get("token"), req.user["id"])
+        if err:
+            return Response({"success": False, "message": err})
+        self.engine.guard.drop_targets()  # les crédits du nouveau membre entrent dans le pot
+        self.engine.journal.log(f"« {req.user['username']} » rejoint « {p['name']} » par lien")
+        return Response({"success": True, "project": self._project_view(p, req.user["id"])})
 
     def layer_project(self, req):
         """Rattache un calque à un projet, ou l'en détache (project = null)."""
