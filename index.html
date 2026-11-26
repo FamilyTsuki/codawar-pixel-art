@@ -1575,34 +1575,23 @@ CODA</textarea
               ? (sec / 3600).toFixed(1) + " h"
               : (sec / 86400).toFixed(1) + " j";
       }
-      // estimation brute (s) : débit mesuré sur 30 s, solde et rechargement du canvas courant
-      function etaSeconds(rem) {
-        const s = S.status || {};
-        const rate = s.rate || 0; // poses/s sur ce canvas (30 dernières s)
-        if (s.unlimited) return rate > 0 ? rem / rate : null;
-        const credits = Math.max(0, s.credits || 0),
-          refill = s.refillPerMin ? s.refillPerMin / 60 : 0;
-        const burst = Math.max(rate, refill, 0.5); // vitesse tant qu'il reste des crédits
-        if (rem <= credits) return rem / burst;
-        if (refill > 0) return credits / burst + (rem - credits) / refill;
-        return rate > 0 ? rem / rate : null; // rechargement pas encore mesuré
-      }
-      // lissage : on fait décroître l'estimation précédente avec le temps et on la mélange
-      // à la nouvelle, pour éviter les sauts à chaque relecture
+      // temps restant calculé par le serveur (règle Codawar : 1 crédit / 5 min, max 100,
+      // crédits partagés entre calques du même compte) ; entre deux relectures on fait un
+      // compte à rebours, et on ne recale que si l'écart est notable (évite les sauts)
       const etaSmooth = {};
       function etaText(rem, id) {
         if (!rem) return "";
-        const raw = etaSeconds(rem),
+        const raw = ((S.status || {}).layerEta || {})[id],
           now = Date.now() / 1000,
           prev = etaSmooth[id];
-        if (raw == null || !isFinite(raw)) {
+        if (raw == null) {
           delete etaSmooth[id];
           return "?";
         }
         let v = raw;
-        if (prev && now - prev.t < 120) {
-          const decayed = Math.max(0, prev.v - (now - prev.t));
-          v = 0.8 * decayed + 0.2 * raw;
+        if (prev) {
+          const counted = Math.max(0, prev.v - (now - prev.t));
+          if (Math.abs(counted - raw) < Math.max(30, raw * 0.05)) v = counted;
         }
         etaSmooth[id] = { v, t: now };
         return fmtDur(v);
@@ -3675,7 +3664,12 @@ CODA</textarea
             : s.credits != null
               ? s.credits +
                 (s.accounts > 1 ? ` (${s.accounts} comptes)` : "") +
-                (s.refillPerMin != null ? ` · +${s.refillPerMin}/min` : " · recharge ?")
+                (s.maxCredits ? `/${s.maxCredits}` : "") +
+                (s.nextCredit != null
+                  ? ` · +1 dans ${fmtDur(s.nextCredit)}`
+                  : s.accounts
+                    ? " · max atteint"
+                    : "")
               : "–";
           $("btnPause").textContent = s.paused ? "Reprendre" : "Pause";
           $("btnPause").classList.toggle("on", s.paused);
@@ -3689,7 +3683,7 @@ CODA</textarea
               ? `DÉFENSE (réparation rapide ${s.defending}s) · `
               : "") +
             (!s.unlimited && s.credits != null
-              ? `${s.credits} crédit(s)${s.refillPerMin ? ` +${s.refillPerMin}/min` : ""}${s.nextCredit != null ? ` · prochain dans ${s.nextCredit}s` : ""} · `
+              ? `${s.credits} crédit(s)${s.refillPerMin ? ` +${s.refillPerMin}/min` : ""}${s.nextCredit != null ? ` · prochain dans ${fmtDur(s.nextCredit)}` : ""} · `
               : "") +
             (act
               ? `${act} calque(s) protégé(s) · vérif. dans ${s.nextGuard}s`

@@ -6,6 +6,7 @@ import time
 
 from .. import config
 from ..schedule import within_schedule
+from .pixel_queue import bucket_of
 
 PIXEL_UNCHANGED = "PIXEL_UNCHANGED"
 
@@ -26,10 +27,12 @@ class Placer:
         self.settings = settings  # callable -> dict des réglages
         self._lock = threading.Lock()
         self.paused = False
-        self.backoff_until = 0
+        self._backoff = {}           # lot (canvas, cookie) -> timestamp de reprise
+        self._inflight_by = collections.Counter()  # lot -> requêtes en cours
         self.inflight = 0
         self.placed = self.skipped = self.errors = 0
-        self.last_reject = None  # dernier refus/erreur : {code, message, t}
+        self.last_reject = None      # dernier refus/erreur : {code, message, t, canvas}
+        self._reject_by_canvas = {}  # canvas -> dernier refus/erreur
         self._recent = collections.deque()  # (timestamp, canvas) des poses (débit)
 
     # -- état
@@ -37,11 +40,35 @@ class Placer:
         self.paused = paused
         self.journal.log("Pause" if paused else "Reprise", "warning" if paused else "info")
 
-    def backoff_remaining(self):
-        return max(0, round(self.backoff_until - time.time()))
+    def backoff_remaining(self, canvas=None):
+        """Attente restante (s) : la plus courte parmi les lots du canvas en attente."""
+        now = time.time()
+        with self._lock:
+            waits = [u - now for (cv, _), u in self._backoff.items()
+                     if u > now and (canvas is None or cv == canvas)]
+        return max(0, round(min(waits))) if waits else 0
+
+    def last_reject_for(self, canvas):
+        with self._lock:
+            return self._reject_by_canvas.get(canvas)
 
     def can_post(self):
-        return not self.paused and time.time() >= self.backoff_until and within_schedule(self.settings())
+        return not self.paused and within_schedule(self.settings())
+
+    def _blocked(self, bucket):
+        """Lot en attente (refus récent) ou sans crédit disponible : on passe au lot suivant."""
+        now = time.time()
+        if self._backoff.get(bucket, 0) > now:
+            return True
+        acc = self.wallet.account(bucket[0], bucket[1], now)
+        if not acc or acc["unlimited"] or acc["credits"] is None:
+            return False
+        if acc["credits"] - self._inflight_by[bucket] > 0:
+            return False
+        # plus de crédit : on attend le prochain au lieu d'envoyer une requête refusée
+        wait = acc["nextIn"] if acc["nextIn"] is not None else 30
+        self._backoff[bucket] = now + max(1, wait + 1)
+        return True
 
     def rate(self, canvas=None):
         """Poses par seconde sur la fenêtre récente (toutes ou celles d'un canvas)."""
@@ -71,10 +98,11 @@ class Placer:
     def _take(self):
         if not self.can_post():
             return None
-        item = self.queue.pop()
-        if item is not None:
-            with self._lock:
+        with self._lock:  # verrou tenu pendant le choix : le décompte des crédits en cours reste juste
+            item = self.queue.pop(self._blocked)
+            if item is not None:
                 self.inflight += 1
+                self._inflight_by[bucket_of(*item)] += 1
         return item
 
     def worker(self, idx):
@@ -84,7 +112,7 @@ class Placer:
                 continue
             item = self._take()
             if item is None:
-                time.sleep(0.05)
+                time.sleep(0.2)
                 continue
             key, val = item
             try:
@@ -92,6 +120,10 @@ class Placer:
             finally:
                 with self._lock:
                     self.inflight -= 1
+                    b = bucket_of(key, val)
+                    self._inflight_by[b] -= 1
+                    if self._inflight_by[b] <= 0:
+                        del self._inflight_by[b]
             delay = float(self.settings().get("delay", 0) or 0)
             if delay and not self.defense.active():  # pas de pause en mode défense
                 time.sleep(delay)
@@ -119,26 +151,42 @@ class Placer:
         with self._lock:
             self.placed += 1
             self._recent.append((time.time(), canvas))
+            self._backoff.pop((canvas, cookie), None)
 
     def _on_retry_later(self, key, val, status, code, res):
-        """Erreur réseau, crédits épuisés, limite… : remet le pixel en tête et attend."""
+        """Erreur réseau, crédits épuisés, limite… : remet le pixel en tête de son lot et attend.
+
+        L'attente ne concerne que ce lot (canvas + compte) : les autres canvas continuent.
+        """
+        canvas = key[0]
+        bucket = bucket_of(key, val)
         credit_short = _has_hint(code, config.CREDIT_SHORT_HINTS)
-        wait = self.wallet.credit_wait(key[0], val[2]) if credit_short else (10 if status == "rejected" else 2)
+        wait = self.wallet.credit_wait(canvas, val[2]) if credit_short else (10 if status == "rejected" else 2)
         self.queue.add_if_absent(key, val, front=True)
+        reject = {"code": code or "réseau", "message": res.get("message", ""), "t": time.time(), "canvas": canvas}
         with self._lock:
-            first = time.time() >= self.backoff_until
-            self.backoff_until = max(self.backoff_until, time.time() + wait)
-            self.last_reject = {"code": code or "réseau", "message": res.get("message", ""), "t": time.time()}
-        if first:
-            # message fixe (sans chiffre) pour que le journal fusionne les répétitions
-            self.journal.log("Crédits épuisés — en attente du rechargement" if credit_short
-                             else f"Pause : {code or res.get('message')}", "warning")
+            self._backoff[bucket] = max(self._backoff.get(bucket, 0), time.time() + wait)
+            self.last_reject = reject
+            self._reject_by_canvas[canvas] = reject
+        # une ligne par canvas et par type d'erreur au plus toutes les 30 min (pas de spam)
+        if credit_short:
+            self.journal.log_throttled(("credits", canvas),
+                                       f"Crédits épuisés sur « {canvas} » — 1 crédit / 5 min, les autres canvas continuent",
+                                       "warning")
+        else:
+            self.journal.log_throttled(("pause", canvas, code or "réseau"),
+                                       f"Attente sur « {canvas} » : {code or res.get('message') or 'réseau'}",
+                                       "warning", every=600)
 
     def _on_refused(self, key, color, code, res):
         """Refus définitif : on n'insiste pas sur cette case pendant un moment."""
-        _canvas, col, row = key
+        canvas, col, row = key
         self.queue.mark_failed(key)
+        reject = {"code": code, "message": res.get("message", ""), "t": time.time(), "canvas": canvas}
         with self._lock:
             self.errors += 1
-            self.last_reject = {"code": code, "message": res.get("message", ""), "t": time.time()}
-        self.journal.log(f"Refusé ({col}, {row}) {color} : {code} — {res.get('message', '')}", "error")
+            self.last_reject = reject
+            self._reject_by_canvas[canvas] = reject
+        self.journal.log_throttled(("refus", canvas, code),
+                                   f"Refusé sur « {canvas} » ({col}, {row}) {color} : {code} — {res.get('message', '')}",
+                                   "error", every=300)

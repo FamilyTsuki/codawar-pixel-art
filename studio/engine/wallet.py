@@ -1,34 +1,19 @@
-"""Solde de crédits Codawar et estimation de la vitesse de rechargement.
+"""Solde de crédits Codawar, calculé exactement comme le fait le site.
 
-Chaque canvas a son propre portefeuille, et chaque compte (cookie) aussi : on suit donc
-un portefeuille par couple (canvas, compte) et on agrège par canvas pour l'interface.
-
-Rechargement estimé par comptabilité : sur une fenêtre glissante,
-    rechargé = (solde_fin - solde_début) + crédits dépensés entre les deux
-ce qui reste juste même quand on pose en continu (le solde ne monte alors jamais).
+Règle Codawar (code client du site) : chaque compte a un portefeuille par canvas,
++1 crédit toutes les 5 min depuis `refilledAt`, plafonné à 100 ; le temps passé dans
+une des `pauses` du portefeuille ne compte pas. Le `balance` renvoyé n'est PAS réglé :
+le solde réel est balance + crédits accumulés depuis refilledAt.
 """
 
-import calendar
-import collections
 import hashlib
 import threading
 import time
+from datetime import datetime
 
-REFILL_WINDOW = 300      # fenêtre glissante de mesure du rechargement (s)
-REFILL_MIN_SPAN = 45     # durée minimale de mesure avant d'afficher une estimation (s)
-REFILL_MAX_RATE = 5      # crédits/s au-delà : mesure aberrante
+REFILL_INTERVAL = 300   # s par crédit
+MAX_CREDITS = 100
 CREDIT_WAIT_DEFAULT = 30
-
-
-def seconds_until_refill(wallet):
-    """Secondes avant le prochain crédit d'après wallet["refilledAt"], ou None."""
-    ra = (wallet or {}).get("refilledAt")
-    if not ra:
-        return None
-    try:
-        return calendar.timegm(time.strptime(ra[:19], "%Y-%m-%dT%H:%M:%S")) - time.time()
-    except (ValueError, TypeError):
-        return None
 
 
 def account_key(cookie):
@@ -36,93 +21,113 @@ def account_key(cookie):
     return hashlib.sha1((cookie or "").encode()).hexdigest()[:12]
 
 
-class _Account:
-    """Portefeuille d'un compte sur un canvas."""
+def _ts(iso):
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError, TypeError):
+        return None
 
-    def __init__(self):
-        self.wallet = None
-        self.spent = 0                     # crédits dépensés (poses réussies) depuis le début
-        self.points = collections.deque()  # (t, solde, dépensés cumulés)
-        self.rate = 0.0                    # crédits/s estimés
 
-    def observe(self, wallet, t):
-        self.wallet = wallet
-        if wallet.get("isUnlimited"):
-            return
-        bal = wallet.get("balance")
-        if bal is None:
-            return
-        self.points.append((t, bal, self.spent))
-        while self.points and t - self.points[0][0] > REFILL_WINDOW:
-            self.points.popleft()
-        self._estimate()
+def _pauses(wallet):
+    out = []
+    for p in wallet.get("pauses") or []:
+        s, e = _ts(p.get("start")), _ts(p.get("end"))
+        if s is not None and e is not None and e > s:
+            out.append((s, e))
+    out.sort()
+    merged = []
+    for s, e in out:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    return merged
 
-    def _estimate(self):
-        t0, b0, s0 = self.points[0]
-        t1, b1, s1 = self.points[-1]
-        span = t1 - t0
-        if span < REFILL_MIN_SPAN:
-            return
-        refilled = (b1 - b0) + (s1 - s0)
-        idle = s1 == s0 and b1 == b0  # aucune pose, solde figé : peut-être au plafond, on garde l'estimation
-        if idle and self.rate:
-            return
-        rate = max(0.0, refilled / span)
-        if rate <= REFILL_MAX_RATE:
-            self.rate = rate
+
+def _active(t, pauses):
+    """Temps réel -> temps « actif » (pauses retirées)."""
+    return t - sum(min(e, t) - s for s, e in pauses if s < t)
+
+
+def _real(a, pauses):
+    """Temps actif -> temps réel (inverse de _active)."""
+    extra = 0.0
+    for s, e in pauses:
+        if a + extra <= s:
+            break
+        extra += e - s
+    return a + extra
+
+
+def settle(wallet, now=None):
+    """(solde réel, timestamp du prochain crédit ou None si au plafond / illimité)."""
+    if not wallet:
+        return None, None
+    bal = wallet.get("balance")
+    if wallet.get("isUnlimited"):
+        return bal, None
+    ra = _ts(wallet.get("refilledAt"))
+    if bal is None or ra is None:
+        return bal, None
+    now = time.time() if now is None else now
+    pauses = _pauses(wallet)
+    start = _active(ra, pauses)
+    n = int(max(0.0, _active(now, pauses) - start) // REFILL_INTERVAL)
+    if bal + n >= MAX_CREDITS:
+        return max(bal, MAX_CREDITS), None
+    return bal + n, _real(start + (n + 1) * REFILL_INTERVAL, pauses)
 
 
 class WalletTracker:
     def __init__(self):
         self._lock = threading.Lock()
-        self._accounts = {}  # (canvas, compte) -> _Account
-
-    def _acc(self, canvas, cookie):
-        k = (canvas, account_key(cookie))
-        acc = self._accounts.get(k)
-        if acc is None:
-            acc = self._accounts[k] = _Account()
-        return acc
+        self._wallets = {}  # (canvas, compte) -> dernier wallet renvoyé par Codawar
 
     def placed(self, canvas, cookie, wallet, t=None):
-        """Pose réussie : 1 crédit dépensé ; solde renvoyé par Codawar."""
-        with self._lock:
-            acc = self._acc(canvas, cookie)
-            acc.spent += 1
-            if wallet:
-                acc.observe(wallet, t or time.time())
+        """Pose réussie : Codawar renvoie le portefeuille à jour."""
+        if wallet:
+            with self._lock:
+                self._wallets[(canvas, account_key(cookie))] = wallet
 
-    def observe(self, canvas, account, wallet, t):
-        """Solde lu avec le canvas ; `account` = account_key(cookie utilisé pour la lecture)."""
-        if not wallet:
-            return
+    def observe(self, canvas, account, wallet, t=None):
+        """Portefeuille lu avec le canvas ; `account` = account_key(cookie utilisé pour la lecture)."""
+        if wallet:
+            with self._lock:
+                self._wallets[(canvas, account)] = wallet
+
+    def account(self, canvas, cookie, now=None):
+        """{credits, nextIn, unlimited} pour un compte sur un canvas (None si inconnu)."""
         with self._lock:
-            k = (canvas, account)
-            acc = self._accounts.get(k) or self._accounts.setdefault(k, _Account())
-            acc.observe(wallet, t)
+            w = self._wallets.get((canvas, account_key(cookie)))
+        if not w:
+            return None
+        now = time.time() if now is None else now
+        bal, nxt = settle(w, now)
+        return {"credits": bal, "nextIn": (nxt - now) if nxt else None,
+                "unlimited": bool(w.get("isUnlimited"))}
 
     def credit_wait(self, canvas, cookie):
-        """Attente jusqu'au prochain crédit, au lieu de marteler toutes les 10 s."""
-        with self._lock:
-            acc = self._accounts.get((canvas, account_key(cookie)))
-            nxt = seconds_until_refill(acc.wallet) if acc else None
-        if nxt is None:
+        """Attente jusqu'au prochain crédit de ce compte sur ce canvas."""
+        a = self.account(canvas, cookie)
+        if not a or a["nextIn"] is None:
             return CREDIT_WAIT_DEFAULT
-        return max(15, min(300, round(nxt) + 2))
+        return max(2, min(REFILL_INTERVAL + 5, round(a["nextIn"]) + 2))
 
     def snapshot(self, canvas):
         """Champs d'état pour l'interface, agrégés sur les comptes de ce canvas."""
+        now = time.time()
         with self._lock:
-            accs = [a for (cv, _), a in self._accounts.items() if cv == canvas and a.wallet]
-            wallets = [a.wallet for a in accs]
-            balances = [w.get("balance") for w in wallets if w.get("balance") is not None]
-            unlimited = bool(wallets) and all(w.get("isUnlimited") for w in wallets)
-            rate = sum(a.rate for a in accs)
-            nexts = [n for n in (seconds_until_refill(w) for w in wallets) if n is not None]
+            wallets = [w for (cv, _), w in self._wallets.items() if cv == canvas]
+        settled = [settle(w, now) for w in wallets]
+        balances = [b for b, _ in settled if b is not None]
+        nexts = [n - now for _, n in settled if n]
+        unlimited = bool(wallets) and all(w.get("isUnlimited") for w in wallets)
         return {
             "credits": sum(balances) if balances else None,
+            "maxCredits": MAX_CREDITS * len(wallets),
             "accounts": len(wallets),
             "unlimited": unlimited,
-            "refillPerMin": round(rate * 60, 2) if rate else None,
+            # comptes qui se rechargent encore (pas au plafond) : 1 crédit / 5 min chacun
+            "refillPerMin": round(len(nexts) * 60 / REFILL_INTERVAL, 2) if not unlimited else None,
             "nextCredit": max(0, round(min(nexts))) if nexts else None,
         }

@@ -14,7 +14,7 @@ from .pixel_queue import PixelQueue, SOURCE_MANUAL
 from .placer import Placer
 from .snapshots import Snapshotter
 from .stats import StatsTracker
-from .wallet import WalletTracker
+from .wallet import REFILL_INTERVAL, WalletTracker
 
 
 class Engine:
@@ -85,7 +85,7 @@ class Engine:
     # -- état pour l'interface
     def _blocked_reason(self, canvas):
         """Raison globale pour laquelle la file n'avance pas (None si elle avance)."""
-        backoff = self.placer.backoff_remaining()
+        backoff = self.placer.backoff_remaining(canvas)
         if not self.cookies.any():
             return "pas de cookie Codawar"
         if self.placer.paused:
@@ -94,10 +94,47 @@ class Engine:
             return "minuteur : hors plage horaire"
         if self.boards.is_closed(canvas):
             return "canvas fermé"
-        if backoff > 0:
-            lr = self.placer.last_reject or {}
-            return f"attente {backoff}s — {lr.get('message') or lr.get('code') or 'crédits/limite'}"
+        if backoff > 0 and self.queue.count_for(canvas):
+            lr = self.placer.last_reject_for(canvas) or {}
+            w = self.wallet.snapshot(canvas)
+            if w["credits"] == 0 and not w["unlimited"]:
+                return f"plus de crédit — prochain dans {fmt_wait(backoff)}"
+            return f"attente {fmt_wait(backoff)} — {lr.get('message') or lr.get('code') or 'crédits/limite'}"
         return None
+
+    def layer_eta(self):
+        """Secondes estimées avant la fin de chaque calque actif.
+
+        Les calques d'un même compte sur un même canvas partagent ses crédits :
+        on additionne leurs pixels manquants. Règle Codawar : 1 crédit / 5 min, max 100.
+        """
+        missing = self.guard.layer_missing or {}
+        groups = {}
+        for l in self.store.active_layers():
+            cookie = self.cookies.for_owner(l.get("owner"))
+            g = groups.setdefault((l["canvas"], cookie), [])
+            g.append(l["id"])
+        out = {}
+        for (canvas, cookie), ids in groups.items():
+            rem = sum(missing.get(i, 0) for i in ids)
+            if not rem:
+                continue
+            acc = self.wallet.account(canvas, cookie)
+            if not acc:
+                continue
+            speed = max(self.placer.rate(canvas), 1.0)  # pixels/s quand il y a des crédits
+            if acc["unlimited"]:
+                eta = rem / speed
+            else:
+                credits = max(0, acc["credits"] or 0)
+                if rem <= credits:
+                    eta = rem / speed
+                else:
+                    first = acc["nextIn"] if acc["nextIn"] is not None else REFILL_INTERVAL
+                    eta = credits / speed + max(0.0, first) + (rem - credits - 1) * REFILL_INTERVAL
+            for i in ids:
+                out[i] = round(eta)
+        return out
 
     def status(self, canvas):
         pending = self.queue.pending_for(canvas)
@@ -106,13 +143,14 @@ class Engine:
             "queue": len(self.queue),
             "queueHere": self.queue.count_for(canvas),
             "blocked": self._blocked_reason(canvas),
-            "lastReject": self.placer.last_reject,
+            "lastReject": self.placer.last_reject_for(canvas),
             **self.wallet.snapshot(canvas),
             "inflight": self.placer.inflight,
             "rate": self.placer.rate(canvas),
             "rateAll": self.placer.rate(),
             **self.placer.counters(),
-            "backoff": self.placer.backoff_remaining(),
+            "backoff": self.placer.backoff_remaining(canvas),
+            "layerEta": self.layer_eta(),
             "logs": self.journal.entries(),
             "pending": pending,
             "layerMissing": self.guard.layer_missing,
@@ -121,6 +159,10 @@ class Engine:
             "posting": within_schedule(self.store.settings),
             "nextGuard": self.guard.next_run_in(),
         }
+
+
+def fmt_wait(sec):
+    return f"{sec} s" if sec < 60 else f"{sec // 60} min {sec % 60:02d} s"
 
 
 def _spawn(target, *args):
