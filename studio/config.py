@@ -43,6 +43,13 @@ PG_RETRY_DELAY = 2
 TELEFUNC_HOST = "codawar.coda.school"
 TELEFUNC_PATH = "/_telefunc?_telefunc=txt"
 TELEFUNC_FILE = "/src/modules/canvas/infrastructure/browser-canvas-gateway.telefunc.ts"
+SYNC_FUNCTION = "onSynchronizePackedCanvas"  # ex-onSynchronizeCanvas (supprimée par le site)
+
+# Cadence des poses, PAR COMPTE (tous canvas confondus). Règle Codawar : 3 pixels/s au maximum,
+# sinon avertissement puis exclusion 15 min. On espace les départs d'au moins 0,5 s
+# (2/s, jamais plus de 2 poses sur une même seconde) : marge de sécurité sous la limite.
+PLACE_MIN_INTERVAL = 0.5
+TIMEOUT_PAUSE = 15 * 60 + 30  # exclusion STUDENT_TIMED_OUT : on ne renvoie rien avant la fin
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko)"
 CANVASES_CACHE_TTL = 60
 DEFAULT_COOKIE = os.environ.get("CODAWAR_COOKIE", "")

@@ -9,6 +9,9 @@ from ..schedule import within_schedule
 from .pixel_queue import bucket_of
 
 PIXEL_UNCHANGED = "PIXEL_UNCHANGED"
+ALLY_OVERWRITE = "ALLY_OVERWRITE_CONFIRMATION_REQUIRED"
+ACCOUNT_STOP = ("STUDENT_TIMED_OUT", "ACCOUNT_BANNED")
+RATE_LIMITED = "PLACEMENT_RATE_LIMITED"
 
 
 def _has_hint(code, hints):
@@ -34,6 +37,8 @@ class Placer:
         self.last_reject = None      # dernier refus/erreur : {code, message, t, canvas}
         self._reject_by_canvas = {}  # canvas -> dernier refus/erreur
         self._recent = collections.deque()  # (timestamp, canvas) des poses (débit)
+        self._starts = {}  # cookie -> départ de la dernière pose (limite 3 px/s)
+        self._account_pause = {}  # cookie -> timestamp de fin d'exclusion
 
     # -- état
     def set_paused(self, paused):
@@ -55,10 +60,16 @@ class Placer:
     def can_post(self):
         return not self.paused and within_schedule(self.settings())
 
+    def _paced_out(self, cookie, now):
+        """Vrai si la dernière pose de ce compte date de moins de PLACE_MIN_INTERVAL s."""
+        return now - self._starts.get(cookie, 0) < config.PLACE_MIN_INTERVAL
+
     def _blocked(self, bucket):
-        """Lot en attente (refus récent) ou sans crédit disponible : on passe au lot suivant."""
+        """Lot en attente (refus récent, exclusion, cadence max) ou sans crédit : on passe au suivant."""
         now = time.time()
         if self._backoff.get(bucket, 0) > now:
+            return True
+        if self._account_pause.get(bucket[1], 0) > now or self._paced_out(bucket[1], now):
             return True
         acc = self.wallet.account(bucket[0], bucket[1], now)
         if not acc or acc["unlimited"] or acc["credits"] is None:
@@ -103,6 +114,7 @@ class Placer:
             if item is not None:
                 self.inflight += 1
                 self._inflight_by[bucket_of(*item)] += 1
+                self._starts[item[1][2]] = time.time()  # compte pour la limite de cadence
         return item
 
     def worker(self, idx):
@@ -132,13 +144,28 @@ class Placer:
     def _place(self, key, val):
         canvas, col, row = key
         color, _source, cookie = val
-        res = self.client.call("onPlacePixel", [canvas, col, row, color], cookie, canvas)
+        # 5e argument allyOverwrite=False : on n'écrase jamais un pixel d'allié
+        res = self.client.call("onPlacePixel", [canvas, col, row, color, False], cookie, canvas)
         status, code = res.get("status"), (res.get("code") or "")
         if status == "success":
             self._on_success(key, color, cookie, res)
         elif status == "rejected" and code == PIXEL_UNCHANGED:
             with self._lock:
                 self.skipped += 1
+        elif status == "rejected" and code == ALLY_OVERWRITE:
+            self.queue.mark_failed(key)  # case d'un allié : on la laisse
+            with self._lock:
+                self.skipped += 1
+            self.journal.log_throttled(("allié", canvas), f"Pixels d'alliés sur « {canvas} » laissés intacts", "info")
+        elif status == "rejected" and code in ACCOUNT_STOP:
+            self._on_account_stop(key, val, code, res)
+        elif status == "rejected" and code == RATE_LIMITED:
+            # trop rapide pour le serveur : tout le compte ralentit (la limite est par compte)
+            self.queue.add_if_absent(key, val, front=True)
+            with self._lock:
+                self._account_pause[cookie] = max(self._account_pause.get(cookie, 0), time.time() + 5)
+            self.journal.log_throttled(("rate", cookie[-8:]),
+                                       "Codawar : poses trop rapides — pause de 5 s du compte (limite 3 px/s)", "warning", every=600)
         elif status != "rejected" or _has_hint(code, config.RETRY_LATER_HINTS):
             self._on_retry_later(key, val, status, code, res)
         else:
@@ -177,6 +204,24 @@ class Placer:
             self.journal.log_throttled(("pause", canvas, code or "réseau"),
                                        f"Attente sur « {canvas} » : {code or res.get('message') or 'réseau'}",
                                        "warning", every=600)
+
+    def _on_account_stop(self, key, val, code, res):
+        """Exclusion temporaire / compte banni : plus aucune pose de ce compte, sur aucun canvas."""
+        cookie = val[2]
+        self.queue.add_if_absent(key, val, front=True)
+        wait = config.TIMEOUT_PAUSE if code == "STUDENT_TIMED_OUT" else 24 * 3600
+        reject = {"code": code, "message": res.get("message", ""), "t": time.time(), "canvas": key[0]}
+        with self._lock:
+            self._account_pause[cookie] = time.time() + wait
+            self.last_reject = reject
+            self._reject_by_canvas[key[0]] = reject
+        self.journal.log_throttled(("stop", cookie[-8:], code),
+                                   f"Compte arrêté ({code}) : aucune pose pendant {wait // 60} min — {res.get('message', '')}",
+                                   "error", every=600)
+
+    def account_pause_remaining(self, cookie):
+        with self._lock:
+            return max(0, round(self._account_pause.get(cookie, 0) - time.time()))
 
     def _on_refused(self, key, color, code, res):
         """Refus définitif : on n'insiste pas sur cette case pendant un moment."""
