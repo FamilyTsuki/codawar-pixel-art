@@ -201,7 +201,10 @@ class Api:
         return Response({"layers": self.store.layers_of(req.user["id"]), "settings": self.store.settings,
                          "backend": self.store.backend_name,
                          "canvas": req.user.get("canvas", self.store.settings["canvas"]),
-                         "cookie": self._cookie(req)})
+                         # le cookie Codawar ne sort jamais du serveur : seul un indice de fin,
+                         # pour que l'utilisateur reconnaisse celui qui est en place
+                         "cookieSet": bool(self._cookie(req)),
+                         "cookieHint": self._cookie(req)[-6:] if self._cookie(req) else ""})
 
     def sprites(self, req):
         return Response({"sprites": self.store.sprites_of(req.user["id"])})

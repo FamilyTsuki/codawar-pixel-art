@@ -20,7 +20,7 @@ def _has_hint(code, hints):
 
 
 class Placer:
-    def __init__(self, client, queue, boards, wallet, journal, settings):
+    def __init__(self, client, queue, boards, wallet, journal, settings, pacer):
         self.client = client
         self.queue = queue
         self.boards = boards
@@ -35,8 +35,7 @@ class Placer:
         self.placed = self.skipped = self.errors = 0
         self._reject_by_canvas = {}  # canvas -> dernier refus/erreur
         self._recent = collections.deque()  # (timestamp, canvas) des poses (débit)
-        self._starts = {}  # cookie -> départ de la dernière pose (limite 3 px/s)
-        self._account_pause = {}  # cookie -> timestamp de fin d'exclusion
+        self.pacer = pacer  # cadence + exclusions, partagées avec les outils de destruction
 
     # -- état
     def set_paused(self, paused):
@@ -58,16 +57,12 @@ class Placer:
     def can_post(self):
         return not self.paused and within_schedule(self.settings())
 
-    def _paced_out(self, cookie, now):
-        """Vrai si la dernière pose de ce compte date de moins de PLACE_MIN_INTERVAL s."""
-        return now - self._starts.get(cookie, 0) < config.PLACE_MIN_INTERVAL
-
     def _blocked(self, bucket):
         """Lot en attente (refus récent, exclusion, cadence max) ou sans crédit : on passe au suivant."""
         now = time.time()
         if self._backoff.get(bucket, 0) > now:
             return True
-        if self._account_pause.get(bucket[1], 0) > now or self._paced_out(bucket[1], now):
+        if self.pacer.blocked(bucket[1], now):
             return True
         acc = self.wallet.account(bucket[0], bucket[1], now)
         if not acc or acc["unlimited"] or acc["credits"] is None:
@@ -106,7 +101,7 @@ class Placer:
             if item is not None:
                 self.inflight += 1
                 self._inflight_by[bucket_of(*item)] += 1
-                self._starts[item[1][2]] = time.time()  # compte pour la limite de cadence
+                self.pacer.reserve(item[1][2])  # compte pour la limite de cadence
         return item
 
     def worker(self):
@@ -148,8 +143,7 @@ class Placer:
         elif status == "rejected" and code == RATE_LIMITED:
             # trop rapide pour le serveur : tout le compte ralentit (la limite est par compte)
             self.queue.add_if_absent(key, val, front=True)
-            with self._lock:
-                self._account_pause[cookie] = max(self._account_pause.get(cookie, 0), time.time() + 5)
+            self.pacer.pause(cookie, 5)
             self.journal.log_throttled(("rate", cookie[-8:]),
                                        "Codawar : poses trop rapides — pause de 5 s du compte (limite 3 px/s)", "warning", every=600)
         elif status != "rejected" or _has_hint(code, config.RETRY_LATER_HINTS):
@@ -161,6 +155,7 @@ class Placer:
         canvas, col, row = key
         self.wallet.placed(canvas, cookie, (res.get("value") or {}).get("wallet"))
         self.boards.record_placement(canvas, col, row, color)
+        self.pacer.clear_pause(cookie)
         with self._lock:
             self.placed += 1
             self._recent.append((time.time(), canvas))
@@ -196,8 +191,8 @@ class Placer:
         self.queue.add_if_absent(key, val, front=True)
         wait = config.TIMEOUT_PAUSE if code == "STUDENT_TIMED_OUT" else 24 * 3600
         reject = {"code": code, "message": res.get("message", ""), "t": time.time(), "canvas": key[0]}
+        self.pacer.pause(cookie, wait)
         with self._lock:
-            self._account_pause[cookie] = time.time() + wait
             self._reject_by_canvas[key[0]] = reject
         self.journal.log_throttled(("stop", cookie[-8:], code),
                                    f"Compte arrêté ({code}) : aucune pose pendant {wait // 60} min — {res.get('message', '')}",

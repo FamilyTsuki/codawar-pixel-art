@@ -87,7 +87,6 @@ DEFAULT_SETTINGS = {
     "scheduleFrom": "00:00",
     "scheduleTo": "23:59",
     "vandalThreshold": 12,    # pixels écrasés d'un coup sur un calque actif = alerte
-    "autoChests": True,       # ouvre les coffres quotidien / 2 h dès qu'ils sont disponibles
 }
 
 # ---------------------------------------------------------------- Mise à jour auto (git pull)

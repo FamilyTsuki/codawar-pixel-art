@@ -11,6 +11,7 @@ from .defense import DefenseMode
 from .guard import Guard
 from .journal import Journal
 from .loot import LootService
+from .pace import AccountPacer
 from .pixel_queue import PixelQueue, SOURCE_MANUAL
 from .placer import Placer
 from .snapshots import Snapshotter
@@ -32,13 +33,14 @@ class Engine:
         self.boards.subscribe(lambda canvas, b: self.wallet.observe(canvas, b["account"], b["wallet"], b["t"]))
         self.boards.subscribe(self.stats.observe)
         self.queue = PixelQueue()
+        self.pacer = AccountPacer()  # cadence 3 px/s : poses et outils de destruction
         self.defense = DefenseMode()
-        self.placer = Placer(client, self.queue, self.boards, self.wallet, self.journal, settings)
+        self.placer = Placer(client, self.queue, self.boards, self.wallet, self.journal, settings, self.pacer)
         self.placer.restore_counters(runtime)
         self.guard = Guard(store, self.boards, self.queue, self.defense, self.journal,
                            directory, self.cookies, settings)
         self.snapshotter = Snapshotter(self.boards, store)
-        self.loot = LootService(client, store, self.journal, settings)
+        self.loot = LootService(client, store, self.journal, self.pacer)
 
     # -- tâches de fond
     def start(self):

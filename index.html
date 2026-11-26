@@ -1369,8 +1369,8 @@ CODA</textarea
             </div>
             <label class="row" style="margin-top: 10px; gap: 8px">
               <input type="checkbox" id="lootAuto" /> Ouvrir automatiquement les
-              coffres dès qu'ils sont disponibles (vérifié chaque minute, tous les
-              comptes)
+              coffres de <b>ce compte</b> dès qu'ils sont disponibles (vérifié
+              chaque minute)
             </label>
           </section>
           <section>
@@ -2838,8 +2838,10 @@ CODA</textarea
           return;
         }
         const v = S.board.map.get(key(c, r));
+        // v[1] est le pseudo d'un autre joueur : échappé, sinon un pseudo piégé
+        // injecte du HTML dans l'interface (le studio détient le cookie Codawar)
         $("fInfo").innerHTML = v
-          ? `<span style="display:inline-block;width:10px;height:10px;background:${v[0]};border:1px solid #000;vertical-align:-1px"></span> ${v[0]} · ${v[1] || "?"}${v[2] ? " · protection " + v[2] : ""}`
+          ? `<span style="display:inline-block;width:10px;height:10px;background:${escHtml(v[0])};border:1px solid #000;vertical-align:-1px"></span> ${escHtml(v[0])} · ${escHtml(v[1] || "?")}${v[2] ? " · protection " + escHtml(v[2]) : ""}`
           : "vide";
       }
 
@@ -3826,7 +3828,10 @@ CODA</textarea
         if (reload) loadLoot(true);
       }
       $("lootRefresh").onclick = () => loadLoot(true);
-      $("lootAuto").onchange = (e) => post("/api/settings", { autoChests: e.target.checked });
+      $("lootAuto").onchange = (e) => {
+        S.prefs = { ...(S.prefs || {}), autoChests: e.target.checked };
+        post("/api/account", { prefs: S.prefs });
+      };
       setInterval(() => {
         if (document.querySelector('.tab[data-tab="loot"]').classList.contains("sel")) renderLoot();
       }, 1000); // comptes à rebours des coffres
@@ -3873,13 +3878,17 @@ CODA</textarea
         const s = r.settings;
         $("sGuard").value = s.guardInterval;
         $("sOrder").value = s.order;
-        $("sCookie").value = r.cookie || "";
+        // le serveur ne renvoie plus le cookie : champ vide = on garde celui en place
+        $("sCookie").value = "";
+        $("sCookie").placeholder = r.cookieSet
+          ? `cookie en place (…${r.cookieHint}) — laisser vide pour le garder`
+          : "colle ici ton cookie codawar_session";
         S.statusOrder = s.order;
         $("sSchedOn").checked = !!s.scheduleOn;
         $("sSchedFrom").value = s.scheduleFrom || "00:00";
         $("sSchedTo").value = s.scheduleTo || "23:59";
         $("sVandal").value = s.vandalThreshold ?? 12;
-        $("lootAuto").checked = s.autoChests !== false;
+        $("lootAuto").checked = !!(S.prefs || {}).autoChests;
         loadLoot(false);
         $("sBackend").textContent =
           r.backend === "postgres"
@@ -3904,13 +3913,19 @@ CODA</textarea
           vandalThreshold: +$("sVandal").value || 12,
         });
         // le cookie Codawar et le canvas par défaut sont attachés au compte (le serveur nettoie le cookie collé)
+        // champ laissé vide : on n'envoie pas la clé, le cookie en place est conservé
+        const typed = $("sCookie").value.trim();
         const acc = await post("/api/account", {
-          cookie: $("sCookie").value,
+          ...(typed ? { cookie: typed } : {}),
           canvas: S.canvas,
         });
         if (acc && acc.success === false) {
           toast(acc.message || "cookie invalide");
           return;
+        }
+        if (typed) {
+          $("sCookie").value = "";
+          loadServerState();
         }
         S.statusOrder = $("sOrder").value;
         $("sSaved").textContent = "enregistré";
@@ -4398,6 +4413,7 @@ CODA</textarea
           $("auth").hidden = true;
           $("app").hidden = false;
           $("hUser").textContent = me.username;
+          S.prefs = me.prefs || {}; // préférences du compte (coffres auto…)
           startApp();
         } else {
           setAuthMode("login");

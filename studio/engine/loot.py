@@ -39,11 +39,11 @@ def describe_rewards(value):
 
 
 class LootService:
-    def __init__(self, client, store, journal, settings):
+    def __init__(self, client, store, journal, pacer):
         self.client = client
         self.store = store
         self.journal = journal
-        self.settings = settings  # callable -> réglages
+        self.pacer = pacer  # cadence partagée avec les poses de pixels
         self._lock = threading.Lock()
         self._cache = {}  # cookie -> (t, données de la page /coffres)
 
@@ -93,28 +93,42 @@ class LootService:
         return res
 
     def use_tool(self, cookie, canvas, tool, col, row):
-        """Outil de destruction sur une case. allyOverwrite=False : on ne touche pas aux alliés."""
+        """Outil de destruction sur une case. allyOverwrite=False : on ne touche pas aux alliés.
+
+        Un outil compte comme une pose pour Codawar : il passe par la cadence partagée,
+        sinon il s'ajoute aux poses de la file dans la même seconde et le compte est exclu.
+        """
+        left = self.pacer.pause_remaining(cookie)
+        if left:
+            return {"status": "rejected", "code": "ACCOUNT_PAUSED",
+                    "message": f"compte en pause {left} s (exclusion ou refus récent)"}
+        if not self.pacer.wait_turn(cookie):
+            return {"status": "rejected", "code": "PACED_OUT",
+                    "message": "cadence maximale atteinte, réessaie dans un instant"}
         res = self._call(cookie, "onUseTool", [canvas, tool, int(col), int(row), str(uuid.uuid4()), False],
                          file=config.TELEFUNC_FILE, page=f"/canvas/{canvas}", canvas=canvas)
+        code = res.get("code") or ""
         if res.get("status") == "success":
             self.journal.log(f"{ITEM_NAMES.get(tool, tool)} utilisée en ({col}, {row}) sur « {canvas} »", "warning")
+        elif code == "STUDENT_TIMED_OUT":
+            self.pacer.pause(cookie, config.TIMEOUT_PAUSE)
+        elif code == "PLACEMENT_RATE_LIMITED":
+            self.pacer.pause(cookie, 5)
         return res
 
     # -- coffres automatiques
     def loop(self):
         while True:
             time.sleep(config.LOOT_INTERVAL)
-            if not self.settings().get("autoChests"):
-                continue
             try:
                 self.claim_available()
             except Exception as e:
                 print(f"loot: {e}", flush=True)
 
     def claim_available(self):
-        cookies = {u["cookie"] for u in self.store.users_with_cookie() if u.get("cookie")}
-        if self.store.settings.get("cookie"):
-            cookies.add(self.store.settings["cookie"])
+        """Ouvre les coffres des comptes qui ont coché le réglage, chacun avec SON cookie."""
+        cookies = {u["cookie"] for u in self.store.users_with_cookie()
+                   if u.get("cookie") and (u.get("prefs") or {}).get("autoChests")}
         for cookie in cookies:
             data = self.overview(cookie, max_age=0)
             ov = (data or {}).get("overview") or {}
