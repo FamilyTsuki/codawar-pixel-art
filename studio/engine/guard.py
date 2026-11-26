@@ -78,7 +78,9 @@ class Guard:
         by_canvas = collections.defaultdict(list)
         for l in self.store.active_layers():
             by_canvas[l["canvas"]].append(l)
-        self.queue.drop_source(SOURCE_LAYER)  # les anciennes cibles sont recalculées
+        # canvas sans calque actif : plus rien à poser pour eux ; les autres sont resynchronisés
+        # après relecture (sans vider la file avant, sinon elle tombe à 0 pendant la lecture)
+        self.queue.drop_source(SOURCE_LAYER, keep_canvases=set(by_canvas))
         missing = {}
         for canvas, layers in by_canvas.items():
             missing.update(self._guard_canvas(canvas, layers))
@@ -141,6 +143,6 @@ class Guard:
         else:
             todo.sort(key=lambda p: (p[1], p[0]))
         todo.sort(key=lambda p: 0 if attacked(p[0], p[1]) else 1)
-        for c, r, h in todo:
-            cookie = cookie_of[owner_of[(c, r)]]  # cookie du propriétaire du calque
-            self.queue.add_if_absent((canvas, c, r), (h, SOURCE_LAYER, cookie), front=attacked(c, r))
+        entries = [((canvas, c, r), (h, SOURCE_LAYER, cookie_of[owner_of[(c, r)]]), attacked(c, r))
+                   for c, r, h in todo]  # cookie du propriétaire du calque
+        self.queue.sync_source(canvas, SOURCE_LAYER, entries)

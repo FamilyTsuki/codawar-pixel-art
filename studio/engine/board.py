@@ -5,6 +5,7 @@ import time
 
 from .. import config
 from ..palette import color_at
+from .wallet import account_key
 
 CELL_STRIDE = 6  # [col, row, colorIdx, ownerIdx, protection, revision]
 ME = "(vous)"    # propriétaire noté localement pour nos propres poses
@@ -83,10 +84,12 @@ class BoardCache:
         cached = self.get(canvas)
         if cached and time.time() - cached["t"] <= max_age:
             return cached
-        res = self.client.call("onSynchronizeCanvas", [canvas], cookie or self.default_cookie(), canvas, timeout=30)
+        cookie = cookie or self.default_cookie()
+        res = self.client.call("onSynchronizeCanvas", [canvas], cookie, canvas, timeout=30)
         if res.get("status") != "success":
             return cached
         board = parse_board(res["value"], time.time())
+        board["account"] = account_key(cookie)  # compte dont le portefeuille a été lu
         for fn in self._observers:  # avant publication : aucune pose ne modifie le board pendant ce temps
             fn(canvas, board)
         with self._lock:

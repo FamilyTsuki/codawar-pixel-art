@@ -30,7 +30,7 @@ class Placer:
         self.inflight = 0
         self.placed = self.skipped = self.errors = 0
         self.last_reject = None  # dernier refus/erreur : {code, message, t}
-        self._recent = collections.deque()  # timestamps de poses (débit)
+        self._recent = collections.deque()  # (timestamp, canvas) des poses (débit)
 
     # -- état
     def set_paused(self, paused):
@@ -43,13 +43,14 @@ class Placer:
     def can_post(self):
         return not self.paused and time.time() >= self.backoff_until and within_schedule(self.settings())
 
-    def rate(self):
-        """Poses par seconde sur la fenêtre récente."""
+    def rate(self, canvas=None):
+        """Poses par seconde sur la fenêtre récente (toutes ou celles d'un canvas)."""
         with self._lock:
             now = time.time()
-            while self._recent and now - self._recent[0] > config.RATE_WINDOW:
+            while self._recent and now - self._recent[0][0] > config.RATE_WINDOW:
                 self._recent.popleft()
-            return round(len(self._recent) / config.RATE_WINDOW, 1)
+            n = sum(1 for _, cv in self._recent if canvas is None or cv == canvas)
+            return round(n / config.RATE_WINDOW, 2)
 
     def counters(self):
         return {"placed": self.placed, "skipped": self.skipped, "errors": self.errors}
@@ -102,7 +103,7 @@ class Placer:
         res = self.client.call("onPlacePixel", [canvas, col, row, color], cookie, canvas)
         status, code = res.get("status"), (res.get("code") or "")
         if status == "success":
-            self._on_success(key, color, res)
+            self._on_success(key, color, cookie, res)
         elif status == "rejected" and code == PIXEL_UNCHANGED:
             with self._lock:
                 self.skipped += 1
@@ -111,18 +112,18 @@ class Placer:
         else:
             self._on_refused(key, color, code, res)
 
-    def _on_success(self, key, color, res):
+    def _on_success(self, key, color, cookie, res):
         canvas, col, row = key
-        self.wallet.set((res.get("value") or {}).get("wallet"))
+        self.wallet.placed(canvas, cookie, (res.get("value") or {}).get("wallet"))
         self.boards.record_placement(canvas, col, row, color)
         with self._lock:
             self.placed += 1
-            self._recent.append(time.time())
+            self._recent.append((time.time(), canvas))
 
     def _on_retry_later(self, key, val, status, code, res):
         """Erreur réseau, crédits épuisés, limite… : remet le pixel en tête et attend."""
         credit_short = _has_hint(code, config.CREDIT_SHORT_HINTS)
-        wait = self.wallet.credit_wait() if credit_short else (10 if status == "rejected" else 2)
+        wait = self.wallet.credit_wait(key[0], val[2]) if credit_short else (10 if status == "rejected" else 2)
         self.queue.add_if_absent(key, val, front=True)
         with self._lock:
             first = time.time() >= self.backoff_until

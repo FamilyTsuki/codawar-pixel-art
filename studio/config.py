@@ -58,7 +58,7 @@ SNAPSHOT_INTERVAL = _env_int("SNAPSHOT_INTERVAL", 300)  # instantané du canvas 
 SNAPSHOT_KEEP = _env_int("SNAPSHOT_KEEP", 3000)         # nb max d'instantanés gardés par canvas
 FAILED_RETRY_DELAY = 120   # pixel refusé définitivement : pas de nouvel essai avant 2 min
 DEFENSE_DURATION = 60      # durée du mode défense après une attaque détectée
-RATE_WINDOW = 10           # fenêtre du calcul de débit (s)
+RATE_WINDOW = 30           # fenêtre du calcul de débit (s)
 STATUS_PENDING_LIMIT = 4000
 
 # Codes de rejet qui signifient "réessayer plus tard" (solde, limite, fermeture…)

@@ -1565,24 +1565,47 @@ CODA</textarea
       }
       // temps estimé pour poser `rem` pixels, selon solde + rechargement (1 crédit = 1 pixel)
       function fmtDur(sec) {
+        if (!isFinite(sec) || sec < 0) return "?";
         sec = Math.round(sec);
         return sec < 60
           ? sec + " s"
           : sec < 3600
             ? Math.round(sec / 60) + " min"
-            : (sec / 3600).toFixed(1) + " h";
+            : sec < 172800
+              ? (sec / 3600).toFixed(1) + " h"
+              : (sec / 86400).toFixed(1) + " j";
       }
-      function etaText(rem) {
+      // estimation brute (s) : débit mesuré sur 30 s, solde et rechargement du canvas courant
+      function etaSeconds(rem) {
         const s = S.status || {};
+        const rate = s.rate || 0; // poses/s sur ce canvas (30 dernières s)
+        if (s.unlimited) return rate > 0 ? rem / rate : null;
+        const credits = Math.max(0, s.credits || 0),
+          refill = s.refillPerMin ? s.refillPerMin / 60 : 0;
+        const burst = Math.max(rate, refill, 0.5); // vitesse tant qu'il reste des crédits
+        if (rem <= credits) return rem / burst;
+        if (refill > 0) return credits / burst + (rem - credits) / refill;
+        return rate > 0 ? rem / rate : null; // rechargement pas encore mesuré
+      }
+      // lissage : on fait décroître l'estimation précédente avec le temps et on la mélange
+      // à la nouvelle, pour éviter les sauts à chaque relecture
+      const etaSmooth = {};
+      function etaText(rem, id) {
         if (!rem) return "";
-        const placeRate = Math.max(s.rate || 0, 2); // pixels/s quand on a des crédits
-        if (s.unlimited) return fmtDur(rem / placeRate);
-        const credits = s.credits || 0,
-          perSec = s.refillPerMin ? s.refillPerMin / 60 : 0;
-        const now = Math.min(rem, credits) / placeRate; // posables tout de suite
-        if (rem <= credits) return fmtDur(now);
-        if (!perSec) return "?"; // rechargement inconnu
-        return fmtDur(now + (rem - credits) / perSec); // le reste au rythme du rechargement
+        const raw = etaSeconds(rem),
+          now = Date.now() / 1000,
+          prev = etaSmooth[id];
+        if (raw == null || !isFinite(raw)) {
+          delete etaSmooth[id];
+          return "?";
+        }
+        let v = raw;
+        if (prev && now - prev.t < 120) {
+          const decayed = Math.max(0, prev.v - (now - prev.t));
+          v = 0.8 * decayed + 0.2 * raw;
+        }
+        etaSmooth[id] = { v, t: now };
+        return fmtDur(v);
       }
       // bbox des pixels relatifs d'un calque
       function layerBBox(pixels) {
@@ -1705,7 +1728,7 @@ CODA</textarea
                 let state = "";
                 if (l.active) {
                   if (rem > 0) {
-                    const e = etaText(rem);
+                    const e = etaText(rem, l.id);
                     state = ` · ${rem} à poser${e ? " · ~" + e : ""}${blocked ? " — " + blocked : ""}`;
                   } else state = " · à jour";
                 }
@@ -3641,13 +3664,18 @@ CODA</textarea
           } // session expirée
           S.status = s;
           S.pending = s.pending;
+          // file / débit du canvas courant (total tous canvas entre crochets s'il diffère)
           $("hQueue").textContent =
-            s.queue + (s.inflight ? ` (+${s.inflight})` : "");
+            s.queueHere +
+            (s.queue !== s.queueHere ? ` [${s.queue}]` : "") +
+            (s.inflight ? ` (+${s.inflight} en cours)` : "");
           $("hRate").textContent = s.rate;
           $("hWallet").textContent = s.unlimited
-            ? "∞"
+            ? "illimité"
             : s.credits != null
-              ? s.credits + (s.refillPerMin ? ` (+${s.refillPerMin}/min)` : "")
+              ? s.credits +
+                (s.accounts > 1 ? ` (${s.accounts} comptes)` : "") +
+                (s.refillPerMin != null ? ` · +${s.refillPerMin}/min` : " · recharge ?")
               : "–";
           $("btnPause").textContent = s.paused ? "Reprendre" : "Pause";
           $("btnPause").classList.toggle("on", s.paused);

@@ -28,7 +28,7 @@ class Engine:
         self.wallet = WalletTracker()
         self.stats = StatsTracker(runtime.get("stats", {}), runtime.get("heat"))
         self.boards = BoardCache(client, self.cookies.any)
-        self.boards.subscribe(lambda _canvas, b: self.wallet.observe(b["wallet"], b["t"]))
+        self.boards.subscribe(lambda canvas, b: self.wallet.observe(canvas, b["account"], b["wallet"], b["t"]))
         self.boards.subscribe(self.stats.observe)
         self.queue = PixelQueue()
         self.defense = DefenseMode()
@@ -104,12 +104,13 @@ class Engine:
         return {
             "paused": self.placer.paused,
             "queue": len(self.queue),
-            "queueHere": len(pending),
+            "queueHere": self.queue.count_for(canvas),
             "blocked": self._blocked_reason(canvas),
             "lastReject": self.placer.last_reject,
-            **self.wallet.snapshot(),
+            **self.wallet.snapshot(canvas),
             "inflight": self.placer.inflight,
-            "rate": self.placer.rate(),
+            "rate": self.placer.rate(canvas),
+            "rateAll": self.placer.rate(),
             **self.placer.counters(),
             "backoff": self.placer.backoff_remaining(),
             "logs": self.journal.entries(),
