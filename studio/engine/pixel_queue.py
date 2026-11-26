@@ -116,11 +116,20 @@ class PixelQueue:
             for key in reversed(front):  # pixels attaqués en tête de leur lot, dans l'ordre donné
                 self._buckets[self._where[key]].move_to_end(key, last=False)
 
-    def clear(self):
+    def clear(self, cookies=None):
+        """Vide la file, ou seulement les lots de ces cookies. Renvoie le nombre retiré."""
         with self._lock:
-            n = len(self._where)
-            self._buckets.clear()
-            self._where.clear()
+            if cookies is None:
+                n = len(self._where)
+                self._buckets.clear()
+                self._where.clear()
+                return n
+            n = 0
+            for b in [b for b in self._buckets if b[1] in cookies]:
+                for k in list(self._buckets[b]):
+                    self._where.pop(k, None)
+                    n += 1
+                del self._buckets[b]
             return n
 
     def mark_failed(self, key, delay=config.FAILED_RETRY_DELAY):
@@ -131,15 +140,20 @@ class PixelQueue:
         with self._lock:
             return self._failed.get(key, 0) >= now
 
-    def count_for(self, canvas):
-        with self._lock:
-            return sum(len(items) for b, items in self._buckets.items() if b[0] == canvas)
+    @staticmethod
+    def _match(b, canvas, cookies):
+        return (canvas is None or b[0] == canvas) and (cookies is None or b[1] in cookies)
 
-    def pending_for(self, canvas, limit=config.STATUS_PENDING_LIMIT):
+    def count_for(self, canvas=None, cookies=None):
+        """Pixels en file sur un canvas (None : tous) pour ces cookies (None : tous les comptes)."""
+        with self._lock:
+            return sum(len(items) for b, items in self._buckets.items() if self._match(b, canvas, cookies))
+
+    def pending_for(self, canvas, cookies=None, limit=config.STATUS_PENDING_LIMIT):
         out = []
         with self._lock:
             for b, items in self._buckets.items():
-                if b[0] != canvas:
+                if not self._match(b, canvas, cookies):
                     continue
                 for k, v in items.items():
                     if len(out) >= limit:

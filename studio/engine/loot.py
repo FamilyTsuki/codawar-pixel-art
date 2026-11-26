@@ -11,6 +11,7 @@ import time
 import uuid
 
 from .. import config
+from .journal import audience
 
 CHEST_FUNCS = {"daily": "onClaimDailyChest", "hourly": "onClaimHourlyChest"}
 CHEST_NAMES = {"daily": "coffre quotidien", "hourly": "coffre 2 h"}
@@ -79,7 +80,8 @@ class LootService:
     def claim(self, cookie, kind):
         res = self._call(cookie, CHEST_FUNCS[kind], [str(uuid.uuid4())])
         if res.get("status") == "success":
-            self.journal.log(f"{CHEST_NAMES[kind].capitalize()} ouvert : {describe_rewards(res.get('value'))}")
+            self.journal.log(f"{CHEST_NAMES[kind].capitalize()} ouvert : {describe_rewards(res.get('value'))}",
+                             to=audience([cookie]))
         return res
 
     def open_lootboxes(self, cookie, many=False):
@@ -89,7 +91,8 @@ class LootService:
             v = res.get("value") or {}
             if not many and "reward" in v:
                 v = {**v, "rewards": [v["reward"]]}
-            self.journal.log(f"Lootbox{'es' if many else ''} ouverte{'s' if many else ''} : {describe_rewards(v)}")
+            self.journal.log(f"Lootbox{'es' if many else ''} ouverte{'s' if many else ''} : {describe_rewards(v)}",
+                             to=audience([cookie]))
         return res
 
     def use_tool(self, cookie, canvas, tool, col, row):
@@ -109,7 +112,8 @@ class LootService:
                          file=config.TELEFUNC_FILE, page=f"/canvas/{canvas}", canvas=canvas)
         code = res.get("code") or ""
         if res.get("status") == "success":
-            self.journal.log(f"{ITEM_NAMES.get(tool, tool)} utilisée en ({col}, {row}) sur « {canvas} »", "warning")
+            self.journal.log(f"{ITEM_NAMES.get(tool, tool)} utilisée en ({col}, {row}) sur « {canvas} »", "warning",
+                             to=audience([cookie]))
         elif code == "STUDENT_TIMED_OUT":
             self.pacer.pause(cookie, config.TIMEOUT_PAUSE)
         elif code == "PLACEMENT_RATE_LIMITED":
@@ -138,6 +142,6 @@ class LootService:
                 if (ov.get(f"{kind}Chest") or {}).get("isAvailable"):
                     res = self.claim(cookie, kind)
                     if res.get("status") != "success":
-                        self.journal.log_throttled(("coffre", kind, cookie[-8:]),
+                        self.journal.log_throttled(("coffre", kind),
                                                    f"Coffre non ouvert ({kind}) : {res.get('code') or res.get('message')}",
-                                                   "warning", every=3600)
+                                                   "warning", every=3600, to=audience([cookie]))

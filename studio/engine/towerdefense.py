@@ -12,6 +12,7 @@ import time
 import uuid
 
 from .. import config
+from .journal import audience
 
 TD_FILE = "/src/modules/tower-defense/infrastructure/browser-tower-defense-gateway.telefunc.ts"
 TD_PAGE = "/tower-defense"
@@ -66,7 +67,8 @@ class TowerDefense:
         if res.get("status") == "success":
             v = res.get("value") or {}
             gained = v.get("collected") or v.get("bitsGained") or v.get("pendingBits")
-            self.journal.log(f"Tower Defense : {gained if gained is not None else '?'} bits collectés")
+            self.journal.log(f"Tower Defense : {gained if gained is not None else '?'} bits collectés",
+                             to=audience([cookie]))
         return res
 
     # -- collecte automatique
@@ -98,9 +100,9 @@ class TowerDefense:
             if near_cap or pending >= max(5, yield_h):
                 res = self.collect(cookie)
                 if res.get("status") != "success":
-                    self.journal.log_throttled(("td", cookie[-8:]),
+                    self.journal.log_throttled(("td",),
                                                f"Collecte Tower Defense refusée : {res.get('code') or res.get('message')}",
-                                               "warning", every=3600)
+                                               "warning", every=3600, to=audience([cookie]))
 
     def snapshot(self, cookie):
         """Champs d'état pour l'interface (None si illisible)."""

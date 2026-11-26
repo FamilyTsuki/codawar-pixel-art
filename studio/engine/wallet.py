@@ -113,11 +113,13 @@ class WalletTracker:
             return CREDIT_WAIT_DEFAULT
         return max(2, min(REFILL_INTERVAL + 5, round(a["nextIn"]) + 2))
 
-    def snapshot(self, canvas):
-        """Champs d'état pour l'interface, agrégés sur les comptes de ce canvas."""
+    def snapshot(self, canvas, cookies=None):
+        """Champs d'état pour l'interface, agrégés sur les comptes de ce canvas (ou ces cookies)."""
         now = time.time()
+        keys = None if cookies is None else {account_key(c) for c in cookies}
         with self._lock:
-            wallets = [w for (cv, _), w in self._wallets.items() if cv == canvas]
+            wallets = [w for (cv, acc), w in self._wallets.items()
+                       if cv == canvas and (keys is None or acc in keys)]
         settled = [settle(w, now) for w in wallets]
         balances = [b for b, _ in settled if b is not None]
         nexts = [n - now for _, n in settled if n]

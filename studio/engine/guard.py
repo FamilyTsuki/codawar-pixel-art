@@ -7,6 +7,7 @@ import threading
 import time
 
 from .board import ME, in_board
+from .journal import audience
 from .pixel_queue import SOURCE_LAYER
 
 
@@ -88,12 +89,29 @@ class Guard:
         with self._lock:
             self.layer_missing = missing
 
+    def layer_audience(self, layer):
+        """Public du journal pour un calque : son auteur et les membres de son projet."""
+        uids = {layer.get("owner")}
+        project = self.store.find_project(layer.get("project")) if layer.get("project") else None
+        if project:
+            uids |= set(project.get("members", []))
+        return audience(uids=uids)
+
     def _guard_canvas(self, canvas, layers):
         # un calque de projet a plusieurs cookies : ceux de tous ses membres
         cookies_of = {l["id"]: self.cookies.for_layer(l) for l in layers}
-        board = self.boards.fetch(canvas, max_age=0, cookie=cookies_of[layers[0]["id"]][0])
+        for l in layers:
+            if not cookies_of[l["id"]]:  # aucun cookie : on ne pose PAS avec celui d'un autre
+                self.journal.log_throttled(("nocookie", l["id"]),
+                                           f"Calque « {l.get('name', l['id'])} » : aucun cookie Codawar — rien n'est posé "
+                                           "(ajoute ton cookie dans Réglages)", "error", every=600,
+                                           to=self.layer_audience(l))
+        # lecture seule : n'importe quel cookie valide suffit pour lire le canvas
+        reader = next((cks[0] for cks in cookies_of.values() if cks), None) or self.cookies.any()
+        board = self.boards.fetch(canvas, max_age=0, cookie=reader) if reader else None
         if board is None:
-            self.journal.log(f"Lecture du canvas '{canvas}' impossible", "error")
+            self.journal.log(f"Lecture du canvas '{canvas}' impossible", "error",
+                             to=tuple(t for l in layers for t in self.layer_audience(l)))
             return {}
         now = time.time()
         pixels = board["pixels"]
@@ -131,9 +149,11 @@ class Guard:
             jump = atk[l["id"]] - prev
             if prev <= 2 and jump >= threshold:
                 who = ", ".join(f"{n} ({k})" for n, k in atk_who[l["id"]].most_common(3)) or "inconnu"
-                self.journal.log(f"VANDALISME sur « {l['name']} » : {jump} pixels écrasés. Auteur(s) : {who}", "error")
+                self.journal.log(f"VANDALISME sur « {l['name']} » : {jump} pixels écrasés. Auteur(s) : {who}", "error",
+                                 to=self.layer_audience(l))
                 with self._lock:
-                    self.vandal_alert = {"layer": l["name"], "canvas": canvas, "count": jump, "who": who, "t": now}
+                    self.vandal_alert = {"layerId": l["id"], "layer": l["name"], "canvas": canvas,
+                                         "count": jump, "who": who, "t": now}
             self._prev_attacked[l["id"]] = atk[l["id"]]
         if sum(atk.values()):  # défense : relecture rapide + plus de workers
             self.defense.trigger()
@@ -167,10 +187,12 @@ class Guard:
         else:
             todo.sort(key=lambda p: (p[1], p[0]))
         todo.sort(key=lambda p: 0 if attacked(p[0], p[1]) else 1)
-        spread = {lid: _Spread(self._share(canvas, cks)) for lid, cks in cookies_of.items()}
+        spread = {lid: _Spread(self._share(canvas, cks)) for lid, cks in cookies_of.items() if cks}
         entries = []
         for c, r, h in todo:
             lid = owner_of[(c, r)]
+            if lid not in spread:
+                continue  # calque sans cookie : rien à poser
             # calque personnel : son auteur ; calque de projet : réparti entre les membres
             cookie = spread[lid].next()
             entries.append(((canvas, c, r), (h, SOURCE_LAYER, cookie), attacked(c, r)))

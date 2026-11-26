@@ -11,6 +11,7 @@ from .. import config
 from ..palette import COLOR_INDEX
 from ..codawar import normalize_cookie
 from ..security import check_pw, session_cookie
+from ..engine.journal import audience
 from ..engine.snapshots import decode_grid
 
 
@@ -240,7 +241,8 @@ class Api:
         if len(name) < 2:
             return fail(400, "nom trop court")
         p = self.store.create_project(req.user["id"], name, self._canvas(req, req.body.get("canvas")))
-        self.engine.journal.log(f"Projet « {p['name']} » créé par {req.user['username']}")
+        self.engine.journal.log(f"Projet « {p['name']} » créé par {req.user['username']}",
+                                to=audience(uids=p["members"]))
         return Response({"success": True, "project": self._project_view(p, req.user["id"])})
 
     def project_rename(self, req):
@@ -254,7 +256,8 @@ class Api:
         if err:
             return Response({"success": False, "message": err})
         self.engine.guard.drop_targets()  # les crédits du nouveau membre entrent dans le pot
-        self.engine.journal.log(f"« {req.body.get('username')} » rejoint le projet « {p['name']} »")
+        self.engine.journal.log(f"« {req.body.get('username')} » rejoint le projet « {p['name']} »",
+                                to=audience(uids=p["members"]))
         return Response({"success": True, "project": self._project_view(p, req.user["id"])})
 
     def project_remove(self, req):
@@ -303,7 +306,8 @@ class Api:
         if err:
             return Response({"success": False, "message": err})
         self.engine.guard.drop_targets()  # les crédits du nouveau membre entrent dans le pot
-        self.engine.journal.log(f"« {req.user['username']} » rejoint « {p['name']} » par lien")
+        self.engine.journal.log(f"« {req.user['username']} » rejoint « {p['name']} » par lien",
+                                to=audience(uids=p["members"]))
         return Response({"success": True, "project": self._project_view(p, req.user["id"])})
 
     def layer_project(self, req):
@@ -380,7 +384,7 @@ class Api:
         return Response({"sprites": self.store.sprites_of(req.user["id"])})
 
     def status(self, req):
-        return Response(self.engine.status(self._query_canvas(req)))
+        return Response(self.engine.status(self._query_canvas(req), req.user))
 
     def stats(self, req):
         canvas, ck = self._query_canvas(req), self._cookie(req)
@@ -437,16 +441,19 @@ class Api:
         if not ck:
             return fail(400, "ajoute ton cookie Codawar dans Réglages")
         canvas = self._canvas(req, req.body.get("canvas"))
-        n = self.engine.enqueue(canvas, req.body.get("pixels", []), front=req.body.get("front", True), cookie=ck)
+        n = self.engine.enqueue(canvas, req.body.get("pixels", []), ck, front=req.body.get("front", True))
         return Response({"success": True, "queued": n})
 
     def clear_queue(self, req):
-        self.engine.clear_queue()
+        self.engine.clear_queue(self._cookie(req))  # seulement la file de ce compte
         return ok()
 
     def pause(self, req):
+        ck = self._cookie(req)
+        if not ck:
+            return fail(400, "ajoute ton cookie Codawar dans Réglages")
         paused = bool(req.body.get("paused", True))
-        self.engine.placer.set_paused(paused)
+        self.engine.placer.set_paused(ck, paused)  # seulement les poses de ce compte
         return Response({"success": True, "paused": paused})
 
     def run_guard(self, req):
