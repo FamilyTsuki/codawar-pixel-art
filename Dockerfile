@@ -4,7 +4,7 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # psycopg[binary] embarque libpq (roues disponibles pour amd64 et arm64).
-RUN pip install --no-cache-dir "psycopg[binary]==3.3.9"
+RUN pip install --no-cache-dir "psycopg[binary]==3.3.9" "cryptography==44.0.3"
 
 COPY server.py index.html ./
 COPY studio ./studio

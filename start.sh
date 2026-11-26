@@ -8,5 +8,5 @@ if [ "$AUTO_PULL" = "1" ] && ! command -v git >/dev/null 2>&1; then
   rm -rf /var/lib/apt/lists/*
 fi
 
-pip install --no-cache-dir "psycopg[binary]==3.3.9"
+pip install --no-cache-dir "psycopg[binary]==3.3.9" "cryptography==44.0.3"
 exec python server.py

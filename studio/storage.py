@@ -12,6 +12,7 @@ import threading
 import time
 
 from . import config
+from .secretbox import box
 from .security import hash_pw
 
 try:
@@ -286,6 +287,11 @@ def _session_record(s):
     return {"uid": s, "created": time.time()}
 
 
+def _has_plain_cookie(state):
+    holders = [state.get("settings") or {}, *(state.get("users") or {}).values()]
+    return any(box.is_plain(h.get("cookie")) for h in holders)
+
+
 def open_backend():
     """PostgreSQL si disponible, sinon repli sur le fichier JSON."""
     if psycopg is not None:
@@ -314,6 +320,9 @@ class Store:
         self.runtime = {}   # état d'exécution persistant : compteurs, stats, journal
         self.users = {}     # id -> {id, username, pw, cookie, canvas, prefs}
         self.sessions = {}  # token -> {uid, created}
+        # cookies chiffrés illisibles (clé ou module absents) : réécrits tels quels
+        # à la sauvegarde plutôt qu'effacés ; uid (ou "settings") -> jeton
+        self._sealed = {}
         self._load()
 
     @property
@@ -322,9 +331,14 @@ class Store:
 
     # -- chargement / sauvegarde
     def _load(self):
-        self._apply(self.backend.load() or {})
+        state = self.backend.load() or {}
+        plain = _has_plain_cookie(state)  # avant _apply, qui déchiffre en place
+        self._apply(state)
         if isinstance(self.backend, PostgresBackend) and not self.layers and not self.sprites:
             self._migrate_from_json()
+        elif box.enabled and plain:
+            self.save()  # anciens cookies en clair : chiffrés dès le démarrage
+            _log("Cookies Codawar chiffrés dans la base")
 
     def _apply(self, state):
         self.settings.update(state.get("settings", {}))
@@ -334,6 +348,15 @@ class Store:
         self.runtime = state.get("runtime", {})
         self.users = state.get("users", {})
         self.sessions = state.get("sessions", {})
+        self._open_cookies()
+
+    def _open_cookies(self):
+        """Déchiffre les cookies chargés (en mémoire, ils restent en clair)."""
+        for key, holder in [("settings", self.settings), *self.users.items()]:
+            raw = holder.get("cookie") or ""
+            holder["cookie"] = box.decrypt(raw)
+            if raw and not holder["cookie"]:
+                self._sealed[key] = raw
 
     def _migrate_from_json(self):
         legacy = JsonBackend().load()
@@ -348,12 +371,21 @@ class Store:
         self.runtime = legacy.get("runtime", {}) or self.runtime
         self.users = {**legacy.get("users", {}), **self.users}
         self.sessions = {**legacy.get("sessions", {}), **self.sessions}
+        self._open_cookies()
         self.save()
         _log(f"Migration de {config.DATA_FILE} vers PostgreSQL : "
              f"{len(self.layers)} calques, {len(self.sprites)} sprites, {len(self.users)} comptes")
 
     def _state(self):
-        return {k: getattr(self, k) for k in STATE_KEYS}
+        """État à persister : copie avec les cookies Codawar chiffrés."""
+        state = {k: getattr(self, k) for k in STATE_KEYS}
+        state["settings"] = {**self.settings, "cookie": self._seal("settings", self.settings)}
+        state["users"] = {uid: {**u, "cookie": self._seal(uid, u)} for uid, u in self.users.items()}
+        return state
+
+    def _seal(self, key, holder):
+        plain = holder.get("cookie") or ""
+        return box.encrypt(plain) if plain else self._sealed.get(key, "")
 
     def save(self):
         with self.lock:
@@ -403,6 +435,7 @@ class Store:
         with self.lock:
             if "cookie" in values:
                 user["cookie"] = (values.get("cookie") or "").strip()
+                self._sealed.pop(user["id"], None)  # nouveau cookie : l'ancien jeton illisible est oublié
             if "canvas" in values:
                 user["canvas"] = values.get("canvas") or self.settings["canvas"]
             if isinstance(values.get("prefs"), dict):
