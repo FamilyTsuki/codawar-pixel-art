@@ -47,6 +47,8 @@ SYNC_FUNCTION = "onSynchronizePackedCanvas"  # ex-onSynchronizeCanvas (supprimé
 TELEFUNC_LOOTBOX = "/src/modules/lootbox/infrastructure/browser-lootbox-gateway.telefunc.ts"
 INVITE_TTL = 7 * 24 * 3600   # durée de validité d'un lien d'invitation (s)
 LOOT_INTERVAL = 60        # vérification des coffres disponibles (s)
+TD_INTERVAL = 600         # vérification du Tower Defense pour collecter les bits (s)
+TD_CACHE_TTL = 20         # cache de l'état Tower Defense (s)
 LOOT_CACHE_TTL = 20       # cache de la page /coffres (s)
 # Outils de destruction : rayon du losange touché (napalm : zone aléatoire décidée par le serveur)
 DESTRUCTION_TOOLS = {"pickaxe": 0, "dynamite": 1, "bomb": 2, "napalm": None, "nuke": 5}

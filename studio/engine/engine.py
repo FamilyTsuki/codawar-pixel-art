@@ -11,6 +11,7 @@ from .defense import DefenseMode
 from .guard import Guard
 from .journal import Journal
 from .loot import LootService
+from .towerdefense import TowerDefense
 from .pace import AccountPacer
 from .pixel_queue import PixelQueue, SOURCE_MANUAL
 from .placer import Placer
@@ -41,6 +42,7 @@ class Engine:
                            directory, self.cookies, settings, self.wallet)
         self.snapshotter = Snapshotter(self.boards, store)
         self.loot = LootService(client, store, self.journal, self.pacer)
+        self.td = TowerDefense(client, store, self.journal, settings)
 
     # -- tâches de fond
     def start(self):
@@ -51,6 +53,7 @@ class Engine:
         _spawn(self._stats_loop)
         _spawn(self.snapshotter.loop)
         _spawn(self.loot.loop)
+        _spawn(self.td.loop)
 
     def _persist_loop(self):
         while True:

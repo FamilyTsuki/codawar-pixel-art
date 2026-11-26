@@ -91,6 +91,8 @@ ROUTES = {
     ("POST", "/api/loot/claim"): Route("loot_claim"),
     ("POST", "/api/loot/open"): Route("loot_open"),
     ("POST", "/api/tool/use"): Route("tool_use"),
+    ("GET", "/api/td"): Route("td"),
+    ("POST", "/api/td/collect"): Route("td_collect"),
 }
 
 
@@ -350,6 +352,16 @@ class Api:
             return fail(400, "case invalide")
         return Response(self.engine.loot.use_tool(self._cookie(req), self._canvas(req, req.body.get("canvas")),
                                                   tool, col, row))
+
+    # ---------------------------------------------------------------- tower defense
+    def td(self, req):
+        snap = self.engine.td.snapshot(self._cookie(req))
+        if not snap:
+            return Response({"success": False, "message": "Tower Defense illisible (cookie Codawar ?)"})
+        return Response({"success": True, **snap})
+
+    def td_collect(self, req):
+        return Response(self.engine.td.collect(self._cookie(req)))
 
     def canvases(self, req):
         lst = self.directory.list(self._cookie(req), self._canvas(req))

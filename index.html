@@ -1573,6 +1573,38 @@ CODA</textarea
             <h2>Derniers gains</h2>
             <div id="lootLast" class="hint">—</div>
           </section>
+          <section>
+            <h2>
+              Tower Defense <span class="grow"></span
+              ><span class="dots" id="dotsTd"><i></i><i></i><i></i></span
+              ><button id="tdRefresh" style="padding: 3px 9px">Rafraîchir</button>
+            </h2>
+            <div id="tdWarn" class="hint" style="color: var(--err)"></div>
+            <div class="loot-grid">
+              <div class="loot-card">
+                <b>Bits en attente</b>
+                <span id="tdPending" class="hint"></span>
+                <button id="tdCollect">Collecter</button>
+              </div>
+              <div class="loot-card">
+                <b>Rendement</b>
+                <span id="tdYield" class="hint"></span>
+              </div>
+              <div class="loot-card">
+                <b>Record</b>
+                <span id="tdRecord" class="hint"></span>
+              </div>
+            </div>
+            <label class="row" style="margin-top: 10px; gap: 8px">
+              <input type="checkbox" id="tdAuto" /> Collecter automatiquement les
+              bits de <b>ce compte</b> avant le plafond (vérifié toutes les 10 min)
+            </label>
+            <div class="hint" style="margin-top: 6px">
+              Le studio ne joue pas les vagues (leur issue dépend de la puissance
+              de tes tourelles, décidée par le serveur) : il récupère seulement les
+              bits produits, pour qu'aucun ne soit perdu au plafond.
+            </div>
+          </section>
         </div>
 
         <div class="tab" data-tab="log">
@@ -4199,6 +4231,63 @@ CODA</textarea
       $("prjRefresh").onclick = loadProjects;
       $("sCookieWizard").onclick = () => openCookieWizard(false);
 
+      // ------------------------------------------------------------------ Tower Defense : collecte des bits
+      S.td = null;
+      async function loadTd(fresh) {
+        busy("dotsTd", true);
+        try {
+          const d = await fetch("/api/td").then((r) => r.json());
+          if (d.auth === false) return;
+          if (!d.success) {
+            $("tdWarn").textContent = d.message || "Tower Defense illisible";
+            S.td = null;
+            return;
+          }
+          S.td = d;
+          renderTd();
+        } catch {
+        } finally {
+          busy("dotsTd", false);
+        }
+      }
+      function renderTd() {
+        const d = S.td;
+        if (!d) return;
+        $("tdWarn").textContent = d.readOnly ? "Tower Defense en lecture seule." : "";
+        const cap =
+          d.capReached
+            ? " · plafond atteint (bits perdus !)"
+            : d.capInSeconds != null
+              ? " · plafond dans " + fmtDur(d.capInSeconds)
+              : "";
+        $("tdPending").textContent = `${d.pending ?? "?"} bits${cap}`;
+        $("tdCollect").disabled = !((d.pending ?? 0) > 0) || d.readOnly;
+        $("tdYield").textContent = `${d.yieldPerHour ?? "?"} bits/h · ${d.bits ?? "?"} bits au total`;
+        $("tdRecord").textContent = `Jalon ${d.recordJalon ?? "?"} · puissance ${d.totalPower ?? "?"}`;
+      }
+      $("tdCollect").onclick = async () => {
+        const r = await post("/api/td/collect", {});
+        if (r.status === "success") {
+          const v = r.value || {};
+          const g = v.collected ?? v.bitsGained ?? v.pendingBits;
+          toast(`Collecté : ${g != null ? g + " bits" : "ok"}`);
+        } else toast(r.message || r.code || "collecte refusée");
+        loadTd(true);
+      };
+      $("tdRefresh").onclick = () => loadTd(true);
+      $("tdAuto").onchange = (e) => {
+        S.prefs = { ...(S.prefs || {}), autoTowerDefense: e.target.checked };
+        post("/api/account", { prefs: S.prefs });
+      };
+      // rafraîchit le compte à rebours du plafond quand l'onglet est visible
+      setInterval(() => {
+        if (
+          S.td &&
+          document.querySelector('.tab[data-tab="loot"]').classList.contains("sel")
+        )
+          renderTd();
+      }, 1000);
+
       // ------------------------------------------------------------------ Coffres, inventaire, outils de destruction
       const ITEM_NAMES = {
         pickaxe: "Pioche", dynamite: "Dynamite", bomb: "Bombe", napalm: "Napalm", nuke: "Nuke",
@@ -4354,7 +4443,10 @@ CODA</textarea
           l.scrollTop = l.scrollHeight;
         }
         if (t === "projects") loadProjects();
-        if (t === "loot") loadLoot(true);
+        if (t === "loot") {
+          loadLoot(true);
+          loadTd(true);
+        }
         if (t === "history") loadHistory();
         else stopPlay();
       }
@@ -4389,7 +4481,9 @@ CODA</textarea
         $("sSchedTo").value = s.scheduleTo || "23:59";
         $("sVandal").value = s.vandalThreshold ?? 12;
         $("lootAuto").checked = !!(S.prefs || {}).autoChests;
+        $("tdAuto").checked = !!(S.prefs || {}).autoTowerDefense;
         loadLoot(false);
+        loadTd(false);
         loadProjects();
         $("sBackend").textContent =
           r.backend === "postgres"
