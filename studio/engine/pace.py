@@ -17,19 +17,21 @@ class AccountPacer:
         self._lock = threading.Lock()
         self._last = {}    # cookie -> départ de la dernière action
         self._pause = {}   # cookie -> fin d'une exclusion / interdiction
+        self._expired = set()  # cookies refusés par Codawar (SESSION_EXPIRED) : inutilisables
 
     def blocked(self, cookie, now=None):
         """Vrai si ce compte ne doit envoyer aucune action maintenant."""
         now = time.time() if now is None else now
         with self._lock:
-            return (self._pause.get(cookie, 0) > now
+            return (cookie in self._expired
+                    or self._pause.get(cookie, 0) > now
                     or now - self._last.get(cookie, 0) < config.PLACE_MIN_INTERVAL)
 
     def reserve(self, cookie, now=None):
         """Réserve un créneau ; False si le compte est bloqué (rien n'est réservé)."""
         now = time.time() if now is None else now
         with self._lock:
-            if (self._pause.get(cookie, 0) > now
+            if (cookie in self._expired or self._pause.get(cookie, 0) > now
                     or now - self._last.get(cookie, 0) < config.PLACE_MIN_INTERVAL):
                 return False
             self._last[cookie] = now
@@ -51,6 +53,16 @@ class AccountPacer:
     def pause_remaining(self, cookie):
         with self._lock:
             return max(0, round(self._pause.get(cookie, 0) - time.time()))
+
+    def mark_expired(self, cookie):
+        """Cookie mort : plus aucune action avec lui. Un cookie ressaisi est une autre
+        chaîne, il repart donc de lui-même."""
+        with self._lock:
+            self._expired.add(cookie)
+
+    def is_expired(self, cookie):
+        with self._lock:
+            return cookie in self._expired
 
     def clear_pause(self, cookie):
         with self._lock:

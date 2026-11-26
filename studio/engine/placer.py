@@ -12,8 +12,10 @@ from .wallet import account_key
 
 PIXEL_UNCHANGED = "PIXEL_UNCHANGED"
 ALLY_OVERWRITE = "ALLY_OVERWRITE_CONFIRMATION_REQUIRED"
-ACCOUNT_STOP = ("STUDENT_TIMED_OUT", "ACCOUNT_BANNED")
+# SESSION_EXPIRED : cookie périmé. La pause est indexée par cookie : un nouveau cookie repart aussitôt.
+ACCOUNT_STOP = ("STUDENT_TIMED_OUT", "ACCOUNT_BANNED", "SESSION_EXPIRED")
 RATE_LIMITED = "PLACEMENT_RATE_LIMITED"
+SESSION_EXPIRED = "SESSION_EXPIRED"
 
 
 def _has_hint(code, hints):
@@ -182,6 +184,8 @@ class Placer:
                 self._count(cookie, "skipped")
             self.journal.log_throttled(("allié", canvas), f"Pixels d'alliés sur « {canvas} » laissés intacts", "info",
                                        to=to)
+        elif status == "rejected" and code == SESSION_EXPIRED:
+            self._on_session_expired(key, val, res)
         elif status == "rejected" and code in ACCOUNT_STOP:
             self._on_account_stop(key, val, code, res)
         elif status == "rejected" and code == RATE_LIMITED:
@@ -231,6 +235,21 @@ class Placer:
                                        f"Attente sur « {canvas} » : {code or res.get('message') or 'réseau'}",
                                        "warning", every=600, to=to)
 
+    def _on_session_expired(self, key, val, res):
+        """Cookie expiré : on arrête ce compte au lieu d'envoyer chaque pixel pour rien."""
+        cookie = val[2]
+        self.pacer.mark_expired(cookie)
+        # sa file part à la poubelle : la garde redonne les pixels des calques aux membres
+        # encore valides au prochain tour (une case déjà en file ne change pas de compte)
+        self.queue.clear({cookie})
+        reject = {"code": SESSION_EXPIRED, "message": res.get("message", ""), "t": time.time(), "canvas": key[0]}
+        with self._lock:
+            self._reject[bucket_of(key, val)] = reject
+        self.journal.log_throttled(("expired",),
+                                   "Cookie Codawar expiré : aucune pose avec ce compte. "
+                                   "Reconnecte-toi sur Codawar et recolle ton cookie dans Réglages",
+                                   "error", every=600, to=audience([cookie]))
+
     def _on_account_stop(self, key, val, code, res):
         """Exclusion temporaire / compte banni : plus aucune pose de ce compte, sur aucun canvas."""
         cookie = val[2]
@@ -240,9 +259,11 @@ class Placer:
         self.pacer.pause(cookie, wait)
         with self._lock:
             self._reject[bucket_of(key, val)] = reject
-        self.journal.log_throttled(("stop", code),
-                                   f"Compte arrêté ({code}) : aucune pose pendant {wait // 60} min — {res.get('message', '')}",
-                                   "error", every=600, to=audience([cookie]))
+        if code == "SESSION_EXPIRED":
+            msg = "Session Codawar expirée : mettez à jour le cookie du compte (les pixels restent en file)"
+        else:
+            msg = f"Compte arrêté ({code}) : aucune pose pendant {wait // 60} min — {res.get('message', '')}"
+        self.journal.log_throttled(("stop", code), msg, "error", every=600, to=audience([cookie]))
 
     def _on_refused(self, key, val, code, res):
         """Refus définitif : on n'insiste pas sur cette case pendant un moment."""

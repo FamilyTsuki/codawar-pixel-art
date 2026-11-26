@@ -39,7 +39,7 @@ class Engine:
         self.placer = Placer(client, self.queue, self.boards, self.wallet, self.journal, settings, self.pacer)
         self.placer.restore_counters(runtime)
         self.guard = Guard(store, self.boards, self.queue, self.defense, self.journal,
-                           directory, self.cookies, settings, self.wallet)
+                           directory, self.cookies, settings, self.wallet, self.pacer)
         self.snapshotter = Snapshotter(self.boards, store)
         self.loot = LootService(client, store, self.journal, self.pacer)
         self.td = TowerDefense(client, store, self.journal, settings)
@@ -99,6 +99,8 @@ class Engine:
         """Raison pour laquelle la file de ce compte n'avance pas (None si elle avance)."""
         if not cookies:
             return "pas de cookie Codawar"
+        if all(self.pacer.is_expired(c) for c in cookies):
+            return "cookie Codawar expiré — recolle-le dans Réglages"
         backoff = self.placer.backoff_remaining(canvas, cookies)
         if all(self.placer.is_paused(c) for c in cookies):
             return "en pause"

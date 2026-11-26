@@ -27,7 +27,7 @@ def build_target(layers, board):
 
 
 class Guard:
-    def __init__(self, store, boards, queue, defense, journal, directory, cookies, settings, wallet):
+    def __init__(self, store, boards, queue, defense, journal, directory, cookies, settings, wallet, pacer=None):
         self.store = store
         self.boards = boards
         self.queue = queue
@@ -37,6 +37,7 @@ class Guard:
         self.cookies = cookies      # CookieResolver
         self.wallet = wallet        # crédits par compte : répartition des pixels d'un projet
         self.settings = settings    # callable -> dict des réglages
+        self.pacer = pacer          # cookies expirés : exclus de la répartition
         self._lock = threading.Lock()
         self._kick = threading.Event()
         self.last_run = 0
@@ -99,12 +100,12 @@ class Guard:
 
     def _guard_canvas(self, canvas, layers):
         # un calque de projet a plusieurs cookies : ceux de tous ses membres
-        cookies_of = {l["id"]: self.cookies.for_layer(l) for l in layers}
+        cookies_of = {l["id"]: self._usable(self.cookies.for_layer(l)) for l in layers}
         for l in layers:
             if not cookies_of[l["id"]]:  # aucun cookie : on ne pose PAS avec celui d'un autre
                 self.journal.log_throttled(("nocookie", l["id"]),
-                                           f"Calque « {l.get('name', l['id'])} » : aucun cookie Codawar — rien n'est posé "
-                                           "(ajoute ton cookie dans Réglages)", "error", every=600,
+                                           f"Calque « {l.get('name', l['id'])} » : aucun cookie Codawar valide — rien n'est posé "
+                                           "(ajoute ou recolle ton cookie dans Réglages)", "error", every=600,
                                            to=self.layer_audience(l))
         # lecture seule : n'importe quel cookie valide suffit pour lire le canvas
         reader = next((cks[0] for cks in cookies_of.values() if cks), None) or self.cookies.any()
@@ -157,6 +158,12 @@ class Guard:
             self._prev_attacked[l["id"]] = atk[l["id"]]
         if sum(atk.values()):  # défense : relecture rapide + plus de workers
             self.defense.trigger()
+
+    def _usable(self, cookies):
+        """Cookies encore valides (un cookie expiré ne reçoit plus de pixels)."""
+        if not self.pacer:
+            return cookies
+        return [c for c in cookies if not self.pacer.is_expired(c)]
 
     def _share(self, canvas, cookies):
         """Répartit les pixels d'un calque entre les comptes, au prorata de leurs crédits.
