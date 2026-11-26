@@ -30,6 +30,7 @@ class Snapshotter:
         self.store = store
         self.interval = interval
         self._last = {}  # canvas -> t du dernier instantané
+        self._last_data = {}  # canvas -> (données, w, h, x0, y0) du dernier instantané (anti-doublon)
 
     def loop(self):
         while True:
@@ -42,6 +43,10 @@ class Snapshotter:
                 continue
             self._last[canvas] = now
             try:
-                self.store.add_snapshot(canvas, board["t"], board["w"], board["h"], encode_grid(board))
+                sig = (encode_grid(board), board["w"], board["h"], board.get("x0", 0), board.get("y0", 0))
+                if self._last_data.get(canvas) == sig:
+                    continue  # canvas inchangé : pas de nouvel instantané
+                self._last_data[canvas] = sig
+                self.store.add_snapshot(canvas, board["t"], *sig[1:3], sig[0], *sig[3:])
             except Exception as e:
                 print(f"snapshot: {e}", flush=True)

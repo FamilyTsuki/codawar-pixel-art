@@ -53,7 +53,7 @@ class JsonBackend:
     def save_runtime(self, state):
         self.save(state)  # un seul fichier : tout est réécrit
 
-    def add_snapshot(self, canvas, t, w, h, data):
+    def add_snapshot(self, canvas, t, w, h, data, x0=0, y0=0):
         pass
 
     def list_snapshots(self, canvas):
@@ -61,6 +61,9 @@ class JsonBackend:
 
     def get_snapshot(self, sid):
         return None
+
+    def get_snapshots(self, ids):
+        return []
 
 
 SCHEMA = """
@@ -76,6 +79,21 @@ CREATE TABLE IF NOT EXISTS snapshots (
   id bigserial PRIMARY KEY, canvas text NOT NULL, t double precision NOT NULL,
   w int NOT NULL, h int NOT NULL, data text NOT NULL);
 CREATE INDEX IF NOT EXISTS snapshots_canvas_t ON snapshots (canvas, t);
+ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS x0 int NOT NULL DEFAULT 0;
+ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS y0 int NOT NULL DEFAULT 0;
+"""
+
+# Supprime les instantanés identiques au précédent du même canvas (timelapse sans doublons).
+DEDUP_SNAPSHOTS = """
+DELETE FROM snapshots WHERE id IN (
+  SELECT id FROM (
+    SELECT id, data, w, h, x0, y0,
+           LAG(data) OVER win AS p_data, LAG(w) OVER win AS p_w, LAG(h) OVER win AS p_h,
+           LAG(x0) OVER win AS p_x0, LAG(y0) OVER win AS p_y0
+    FROM snapshots WINDOW win AS (PARTITION BY canvas ORDER BY t, id)
+  ) s
+  WHERE data = p_data AND w = p_w AND h = p_h AND x0 = p_x0 AND y0 = p_y0
+)
 """
 
 
@@ -107,6 +125,9 @@ class PostgresBackend:
             self.conn = psycopg.connect(self.dsn, autocommit=True, connect_timeout=5)
             with self.conn.cursor() as cur:
                 cur.execute(SCHEMA)
+                cur.execute(DEDUP_SNAPSHOTS)
+                if cur.rowcount:
+                    _log(f"Timelapse : {cur.rowcount} instantané(s) en double supprimé(s)")
             return True
         except Exception as e:
             _log(f"PostgreSQL pas prêt ({e})")
@@ -176,13 +197,19 @@ class PostgresBackend:
         self._write("runtime", lambda cur: _upsert_kv(cur, "runtime", state["runtime"]))
 
     # -- instantanés du canvas (timelapse)
-    def add_snapshot(self, canvas, t, w, h, data):
+    def add_snapshot(self, canvas, t, w, h, data, x0=0, y0=0):
+        """Enregistre un instantané, sauf s'il est identique au dernier de ce canvas."""
         if not self._ready():
             return
 
         def write(cur):
-            cur.execute("INSERT INTO snapshots(canvas, t, w, h, data) VALUES (%s,%s,%s,%s,%s)",
-                        (canvas, t, w, h, data))
+            cur.execute("SELECT data, w, h, x0, y0 FROM snapshots WHERE canvas=%s ORDER BY t DESC, id DESC LIMIT 1",
+                        (canvas,))
+            last = cur.fetchone()
+            if last and tuple(last) == (data, w, h, x0, y0):
+                return  # rien n'a changé depuis le dernier instantané
+            cur.execute("INSERT INTO snapshots(canvas, t, w, h, data, x0, y0) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                        (canvas, t, w, h, data, x0, y0))
             cur.execute("DELETE FROM snapshots WHERE canvas=%s AND id NOT IN "
                         "(SELECT id FROM snapshots WHERE canvas=%s ORDER BY t DESC LIMIT %s)",
                         (canvas, canvas, config.SNAPSHOT_KEEP))
@@ -196,10 +223,17 @@ class PostgresBackend:
 
     def get_snapshot(self, sid):
         def read(cur):
-            cur.execute("SELECT canvas, t, w, h, data FROM snapshots WHERE id=%s", (sid,))
+            cur.execute("SELECT canvas, t, w, h, data, x0, y0 FROM snapshots WHERE id=%s", (sid,))
             r = cur.fetchone()
-            return {"canvas": r[0], "t": r[1], "w": r[2], "h": r[3], "data": r[4]} if r else None
+            return {"canvas": r[0], "t": r[1], "w": r[2], "h": r[3], "data": r[4], "x0": r[5], "y0": r[6]} if r else None
         return self._read(read, None)
+
+    def get_snapshots(self, ids):
+        def read(cur):
+            cur.execute("SELECT id, t, w, h, data, x0, y0 FROM snapshots WHERE id = ANY(%s)", (list(ids),))
+            return [{"id": r[0], "t": r[1], "w": r[2], "h": r[3], "data": r[4], "x0": r[5], "y0": r[6]}
+                    for r in cur.fetchall()]
+        return self._read(read, [])
 
 
 def _upsert_kv(cur, table, mapping):
@@ -463,9 +497,9 @@ class Store:
         return {c for c in canvases if c}
 
     # -- instantanés du canvas (timelapse)
-    def add_snapshot(self, canvas, t, w, h, data):
+    def add_snapshot(self, canvas, t, w, h, data, x0=0, y0=0):
         with self.lock:
-            self.backend.add_snapshot(canvas, t, w, h, data)
+            self.backend.add_snapshot(canvas, t, w, h, data, x0, y0)
 
     def list_snapshots(self, canvas):
         with self.lock:
@@ -474,3 +508,7 @@ class Store:
     def get_snapshot(self, sid):
         with self.lock:
             return self.backend.get_snapshot(sid)
+
+    def get_snapshots(self, ids):
+        with self.lock:
+            return self.backend.get_snapshots(ids)

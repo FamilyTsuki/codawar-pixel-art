@@ -59,6 +59,7 @@ ROUTES = {
     ("GET", "/api/heatmap"): Route("heatmap"),
     ("GET", "/api/timelapse"): Route("timelapse"),
     ("GET", "/api/timelapse/frame"): Route("timelapse_frame"),
+    ("GET", "/api/timelapse/frames"): Route("timelapse_frames"),
     ("POST", "/api/register"): Route("register", auth=False, throttled=True),
     ("POST", "/api/login"): Route("login", auth=False, throttled=True),
     ("POST", "/api/logout"): Route("logout", auth=False),
@@ -198,7 +199,13 @@ class Api:
         if not snap:
             return fail(404)
         return Response({"w": snap["w"], "h": snap["h"], "t": snap["t"],
+                         "x0": snap.get("x0", 0), "y0": snap.get("y0", 0),
                          "palette": COLOR_INDEX, "idx": decode_grid(snap["data"])})
+
+    def timelapse_frames(self, req):
+        """Plusieurs instantanés d'un coup, données zlib en base64 (décompressées par le navigateur)."""
+        ids = [int(x) for x in req.query.get("ids", "").split(",") if x.isdigit()][:300]
+        return Response({"frames": self.store.get_snapshots(ids) if ids else []})
 
     def canvas(self, req):
         """Canvas compacté : propriétaires dédoublonnés, cellules à plat [c, r, hex, owner, prot]."""
