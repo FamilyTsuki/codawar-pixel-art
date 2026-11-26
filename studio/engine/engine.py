@@ -38,7 +38,7 @@ class Engine:
         self.placer = Placer(client, self.queue, self.boards, self.wallet, self.journal, settings, self.pacer)
         self.placer.restore_counters(runtime)
         self.guard = Guard(store, self.boards, self.queue, self.defense, self.journal,
-                           directory, self.cookies, settings)
+                           directory, self.cookies, settings, self.wallet)
         self.snapshotter = Snapshotter(self.boards, store)
         self.loot = LootService(client, store, self.journal, self.pacer)
 

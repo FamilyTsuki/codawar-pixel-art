@@ -80,6 +80,19 @@
         border-color: var(--err);
         color: var(--err);
       }
+      /* confirmation d'une suppression : fond rouge plein, texte sombre.
+         Le survol ne doit PAS repeindre le texte en var(--err) : il deviendrait
+         rouge clair sur rouge clair, donc illisible. */
+      button.confirm,
+      button.confirm:hover {
+        background: var(--err);
+        border-color: var(--err);
+        color: #2b0b0b;
+        font-weight: 600;
+      }
+      button.confirm:hover {
+        filter: brightness(1.08);
+      }
       input,
       select {
         background: var(--bg);
@@ -229,6 +242,51 @@
         width: 2px;
         border-radius: 0 2px 2px 0;
         background: var(--acc);
+      }
+      .prj {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 10px;
+      }
+      .prj .prj-top {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .prj .prj-top b {
+        font-size: 15px;
+      }
+      .prj .members {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin: 10px 0;
+      }
+      .prj .member {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        font-size: 13px;
+      }
+      .prj .member.me {
+        border-color: var(--acc-dim);
+        color: var(--acc);
+      }
+      .prj .member small {
+        color: var(--mute);
+      }
+      .prj .member button {
+        padding: 0 5px;
+        font-size: 11px;
+        line-height: 1.5;
+      }
+      .prj .no-cookie {
+        color: var(--warn);
       }
       .loot-grid {
         display: grid;
@@ -902,6 +960,7 @@
           <button data-tab="stats">Stats</button>
           <button data-tab="history">Historique</button>
           <button data-tab="settings">Réglages</button>
+          <button data-tab="projects">Projets</button>
           <button data-tab="loot">Coffres</button>
           <button data-tab="log">Journal</button>
         </div>
@@ -1336,6 +1395,30 @@ CODA</textarea
             <div class="row">
               <span class="hint">Stockage : <b id="sBackend">…</b></span>
             </div>
+          </section>
+        </div>
+
+        <div class="tab" data-tab="projects">
+          <section>
+            <h2>
+              Projets de groupe <span class="grow"></span
+              ><button id="prjRefresh" style="padding: 3px 9px">Rafraîchir</button>
+            </h2>
+            <div class="row">
+              <input
+                id="prjName"
+                placeholder="Nom du projet (ex. Fresque CODA)"
+                style="flex: 1; min-width: 160px"
+              />
+              <button id="prjCreate" class="cta">Créer sur ce canvas</button>
+            </div>
+            <div class="hint" style="margin-top: 6px">
+              Les membres d'un projet voient et modifient les mêmes calques, et la pose
+              comme la défense puisent dans les crédits de <b>tout le groupe</b> :
+              les pixels sont répartis entre les membres au prorata de leurs crédits.
+              On entre dans un projet sur invitation du créateur.
+            </div>
+            <div id="prjList" style="margin-top: 12px"></div>
           </section>
         </div>
 
@@ -1930,7 +2013,7 @@ CODA</textarea
         <input class="name" value="${l.name.replace(/"/g, "&quot;")}">
         ${badge}
       </div>
-      <div class="meta">${st.ok}/${st.total} corrects · pos. ${l.x}, ${l.y}${state}</div>
+      <div class="meta">${st.ok}/${st.total} corrects · pos. ${l.x}, ${l.y}${state}${prjTag(l)}</div>
       <div class="acts">
         <button data-a="active" class="${l.active ? "on" : ""}" title="Poser puis protéger en continu">${l.active ? "Actif" : "Activer"}</button>
         <button data-a="vis">${l.visible ? "Masquer" : "Afficher"}</button>
@@ -1944,6 +2027,7 @@ CODA</textarea
           <button data-a="flipv">Miroir ↕</button>
           <button data-a="resize">Taille…</button>`)}
         ${layerMenu(l, "more", "⋯", `
+          ${projectItems(l)}
           <button data-a="up">Monter ↑</button>
           <button data-a="down">Descendre ↓</button>
           <button data-a="merge" title="Fusionner avec le calque juste en dessous">Fusionner ↓</button>
@@ -1954,7 +2038,7 @@ CODA</textarea
           <button data-a="del" class="danger">Supprimer…</button>`, true)}
         ${
           S.confirmDel === l.id
-            ? '<button data-a="del" class="danger on" style="background:var(--err);border-color:var(--err)">Confirmer la suppression</button><button data-a="nodel">Non</button>'
+            ? '<button data-a="del" class="confirm">Confirmer la suppression</button><button data-a="nodel">Non</button>'
             : ""
         }
       </div>
@@ -1962,6 +2046,33 @@ CODA</textarea
               })
               .join("")
           : '<div class="hint">Aucun calque sur ce canvas.</div>';
+      }
+      // repère d'un calque partagé : nom du projet et nombre de membres qui le défendent
+      function prjTag(l) {
+        if (!l.project) return "";
+        const p = (S.projects || []).find((x) => x.id === l.project);
+        return p
+          ? ` · <b style="color:var(--acc)">${escHtml(p.name)}</b> (${p.members.length} membres)`
+          : " · projet partagé";
+      }
+      // entrées « Projet » du menu d'un calque : y entrer, en changer, en sortir
+      function projectItems(l) {
+        const mine = (S.projects || []).filter((p) => p.canvas === l.canvas);
+        if (!mine.length) return "";
+        const items = mine
+          .filter((p) => p.id !== l.project)
+          .map(
+            (p) =>
+              `<button data-a="toprj" data-prj="${p.id}">Mettre dans « ${escHtml(p.name)} »</button>`,
+          )
+          .join("");
+        return (
+          items +
+          (l.project
+            ? '<button data-a="toprj" data-prj="">Sortir du projet</button>'
+            : "") +
+          (items || l.project ? "<hr />" : "")
+        );
       }
       // menu déroulant d'un calque (état gardé dans S.layerMenu : la liste est souvent redessinée)
       function layerMenu(l, name, label, items, right) {
@@ -2031,6 +2142,22 @@ CODA</textarea
         if (a === "goto") {
           const im = layerImg(l);
           centerOn(l.x + im.x0 + im.w / 2, l.y + im.y0 + im.h / 2);
+        }
+        if (a === "toprj") {
+          const pid = e.target.dataset.prj || null;
+          post("/api/layers/project", { id: l.id, project: pid }).then((r) => {
+            if (r && r.success === false) return toast(r.message || "refusé");
+            l.project = pid || undefined;
+            const p = (S.projects || []).find((x) => x.id === pid);
+            toast(
+              pid
+                ? `« ${l.name} » partagé dans « ${p ? p.name : "projet"} » — crédits du groupe`
+                : `« ${l.name} » redevient personnel`,
+            );
+            loadProjects();
+            renderLayersList();
+          });
+          return;
         }
         if (a === "dup") {
           newLayer(
@@ -3784,6 +3911,116 @@ CODA</textarea
       }
       $("btnText").onclick = openText;
 
+      // ------------------------------------------------------------------ Projets de groupe
+      S.projects = [];
+      async function loadProjects() {
+        try {
+          const d = await fetch("/api/projects").then((r) => r.json());
+          if (d.auth === false) return;
+          S.projects = d.projects || [];
+          renderProjects();
+          renderLayersList(); // le menu « Projet » de chaque calque en dépend
+        } catch {}
+      }
+      function renderProjects() {
+        if (!S.projects.length) {
+          $("prjList").innerHTML =
+            '<div class="hint">Aucun projet. Crée-en un, puis invite tes coéquipiers par leur pseudo du studio.</div>';
+          return;
+        }
+        $("prjList").innerHTML = S.projects
+          .map((p) => {
+            const members = p.members
+              .map(
+                (m) =>
+                  `<span class="member ${m.me ? "me" : ""}">${escHtml(m.username)}${
+                    m.owner ? " <small>créateur</small>" : ""
+                  }<small>${
+                    !m.hasCookie
+                      ? '<span class="no-cookie">pas de cookie</span>'
+                      : m.unlimited
+                        ? "∞"
+                        : (m.credits ?? "?") + " cr."
+                  }</small>${
+                    p.isOwner && !m.owner
+                      ? `<button data-p="kick" data-id="${p.id}" data-m="${m.id}" title="Retirer du projet">×</button>`
+                      : m.me && !m.owner
+                        ? `<button data-p="leave" data-id="${p.id}" data-m="${m.id}">quitter</button>`
+                        : ""
+                  }</span>`,
+              )
+              .join("");
+            return `<div class="prj">
+    <div class="prj-top">
+      <b>${escHtml(p.name)}</b>
+      <span class="hint">${escHtml(p.canvas)} · ${p.layers} calque(s)</span>
+      <span class="grow" style="flex:1"></span>
+      <span class="chip">groupe : <b>${p.unlimited ? "∞" : p.pooledCredits}</b> crédits</span>
+    </div>
+    <div class="members">${members}</div>
+    ${
+      p.isOwner
+        ? `<div class="row">
+      <input data-p="who" data-id="${p.id}" placeholder="pseudo à inviter" style="flex:1;min-width:140px">
+      <button data-p="invite" data-id="${p.id}">Inviter</button>
+      <button data-p="rename" data-id="${p.id}">Renommer</button>
+      <button data-p="del" data-id="${p.id}" class="danger">Supprimer</button>
+    </div>`
+        : '<div class="hint">Tu es membre : tes crédits servent à poser et défendre ce projet.</div>'
+    }
+  </div>`;
+          })
+          .join("");
+      }
+      $("prjList").addEventListener("click", async (e) => {
+        const b = e.target.closest("[data-p]");
+        if (!b) return;
+        const id = b.dataset.id,
+          act = b.dataset.p;
+        if (act === "invite") {
+          const who = $("prjList")
+            .querySelector(`[data-p="who"][data-id="${id}"]`)
+            .value.trim();
+          if (!who) return toast("Indique un pseudo");
+          const r = await post("/api/projects/invite", { id, username: who });
+          toast(r.success ? `${who} ajouté au projet` : r.message || "refusé");
+        } else if (act === "kick" || act === "leave") {
+          const r = await post("/api/projects/remove", { id, member: b.dataset.m });
+          if (!r.success) return toast(r.message || "refusé");
+          toast(act === "leave" ? "Projet quitté" : "Membre retiré");
+        } else if (act === "rename") {
+          const name = prompt("Nouveau nom du projet :");
+          if (!name) return;
+          await post("/api/projects/rename", { id, name });
+        } else if (act === "del") {
+          if (S.confirmPrj !== id) {
+            S.confirmPrj = id;
+            b.textContent = "Confirmer ?";
+            b.classList.add("confirm");
+            setTimeout(() => {
+              S.confirmPrj = null;
+              renderProjects();
+            }, 5000);
+            return;
+          }
+          S.confirmPrj = null;
+          await post("/api/projects/delete", { id });
+          toast("Projet supprimé (les calques redeviennent personnels)");
+        }
+        loadProjects();
+        loadServerState();
+      });
+      $("prjCreate").onclick = async () => {
+        const name = $("prjName").value.trim();
+        if (name.length < 2) return toast("Nom trop court");
+        const r = await post("/api/projects/create", { name, canvas: S.canvas });
+        if (!r.success) return toast(r.message || "échec");
+        $("prjName").value = "";
+        toast(`Projet « ${name} » créé sur ${S.canvas}`);
+        loadProjects();
+      };
+      $("prjRefresh").onclick = loadProjects;
+
       // ------------------------------------------------------------------ Coffres, inventaire, outils de destruction
       const ITEM_NAMES = {
         pickaxe: "Pioche", dynamite: "Dynamite", bomb: "Bombe", napalm: "Napalm", nuke: "Nuke",
@@ -3934,6 +4171,7 @@ CODA</textarea
           const l = $("log");
           l.scrollTop = l.scrollHeight;
         }
+        if (t === "projects") loadProjects();
         if (t === "loot") loadLoot(true);
         if (t === "history") loadHistory();
         else stopPlay();
@@ -3969,6 +4207,7 @@ CODA</textarea
         $("sVandal").value = s.vandalThreshold ?? 12;
         $("lootAuto").checked = !!(S.prefs || {}).autoChests;
         loadLoot(false);
+        loadProjects();
         $("sBackend").textContent =
           r.backend === "postgres"
             ? "PostgreSQL"

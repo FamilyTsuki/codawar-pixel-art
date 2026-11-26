@@ -45,6 +45,7 @@ TELEFUNC_PATH = "/_telefunc?_telefunc=txt"
 TELEFUNC_FILE = "/src/modules/canvas/infrastructure/browser-canvas-gateway.telefunc.ts"
 SYNC_FUNCTION = "onSynchronizePackedCanvas"  # ex-onSynchronizeCanvas (supprimée par le site)
 TELEFUNC_LOOTBOX = "/src/modules/lootbox/infrastructure/browser-lootbox-gateway.telefunc.ts"
+INVITE_TTL = 7 * 24 * 3600   # durée de validité d'un lien d'invitation (s)
 LOOT_INTERVAL = 60        # vérification des coffres disponibles (s)
 LOOT_CACHE_TTL = 20       # cache de la page /coffres (s)
 # Outils de destruction : rayon du losange touché (napalm : zone aléatoire décidée par le serveur)

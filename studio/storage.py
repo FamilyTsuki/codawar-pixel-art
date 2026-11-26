@@ -19,7 +19,7 @@ try:
 except ModuleNotFoundError:
     psycopg = None
 
-STATE_KEYS = ("settings", "layers", "sprites", "runtime", "users", "sessions")
+STATE_KEYS = ("settings", "layers", "sprites", "runtime", "users", "sessions", "projects")
 
 
 def _log(msg):
@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS users (
   id text PRIMARY KEY, username text UNIQUE NOT NULL, pw text NOT NULL,
   cookie text NOT NULL DEFAULT '', canvas text NOT NULL DEFAULT 'playtest-sandbox', prefs jsonb NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS sessions (token text PRIMARY KEY, uid text NOT NULL, created double precision NOT NULL);
+CREATE TABLE IF NOT EXISTS projects (id text PRIMARY KEY, ord int NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS snapshots (
   id bigserial PRIMARY KEY, canvas text NOT NULL, t double precision NOT NULL,
   w int NOT NULL, h int NOT NULL, data text NOT NULL);
@@ -167,6 +168,8 @@ class PostgresBackend:
             layers = [r[0] for r in cur.fetchall()]
             cur.execute("SELECT data FROM sprites ORDER BY ord")
             sprites = [r[0] for r in cur.fetchall()]
+            cur.execute("SELECT data FROM projects ORDER BY ord")
+            projects = [r[0] for r in cur.fetchall()]
             cur.execute("SELECT k, v FROM runtime")
             runtime = dict(cur.fetchall())
             cur.execute("SELECT id, username, pw, cookie, canvas, prefs FROM users")
@@ -174,7 +177,7 @@ class PostgresBackend:
                      for id_, un, pw, ck, cv, pr in cur.fetchall()}
             cur.execute("SELECT token, uid, created FROM sessions")
             sessions = {t: {"uid": u, "created": cr} for t, u, cr in cur.fetchall()}
-        return {"settings": settings, "layers": layers, "sprites": sprites,
+        return {"settings": settings, "layers": layers, "sprites": sprites, "projects": projects,
                 "runtime": runtime, "users": users, "sessions": sessions}
 
     def save(self, state):
@@ -186,6 +189,7 @@ class PostgresBackend:
             _upsert_kv(cur, "settings", state["settings"])
             _replace_rows(cur, "layers", state["layers"])
             _replace_rows(cur, "sprites", state["sprites"])
+            _replace_rows(cur, "projects", state["projects"])
             _upsert_kv(cur, "runtime", state["runtime"])
             _replace_users(cur, state["users"])
             _replace_sessions(cur, state["sessions"])
@@ -306,6 +310,7 @@ class Store:
         self.settings = dict(config.DEFAULT_SETTINGS)
         self.layers = []
         self.sprites = []
+        self.projects = []  # projets de groupe : {id, name, canvas, owner, members[]}
         self.runtime = {}   # état d'exécution persistant : compteurs, stats, journal
         self.users = {}     # id -> {id, username, pw, cookie, canvas, prefs}
         self.sessions = {}  # token -> {uid, created}
@@ -325,6 +330,7 @@ class Store:
         self.settings.update(state.get("settings", {}))
         self.layers = state.get("layers", [])
         self.sprites = state.get("sprites", [])
+        self.projects = state.get("projects", [])
         self.runtime = state.get("runtime", {})
         self.users = state.get("users", {})
         self.sessions = state.get("sessions", {})
@@ -336,6 +342,7 @@ class Store:
         self.settings.update(legacy.get("settings", {}))
         self.layers = legacy.get("layers", [])
         self.sprites = legacy.get("sprites", [])
+        self.projects = legacy.get("projects", [])
         # comptes, sessions et état d'exécution aussi : sinon un repli JSON
         # temporaire ferait perdre les comptes créés entre-temps
         self.runtime = legacy.get("runtime", {}) or self.runtime
@@ -455,10 +462,167 @@ class Store:
                 self.sprites = [s for s in self.sprites if s["id"] != sid]
                 self.save()
 
-    # -- calques
-    def layers_of(self, uid):
+    # -- projets de groupe
+    #
+    # Un projet réunit plusieurs comptes autour des mêmes calques : tous les membres
+    # les voient et les modifient, et la défense puise dans les crédits de TOUS
+    # les membres (voir CookieResolver.for_layer). L'entrée se fait sur invitation
+    # du créateur uniquement.
+    def find_project(self, pid):
         with self.lock:
-            return [l for l in self.layers if l.get("owner") == uid]
+            return next((p for p in self.projects if p["id"] == pid), None)
+
+    def projects_of(self, uid):
+        with self.lock:
+            return [p for p in self.projects if uid in p.get("members", [])]
+
+    def project_ids_of(self, uid):
+        return {p["id"] for p in self.projects_of(uid)}
+
+    def is_member(self, uid, pid):
+        p = self.find_project(pid)
+        return bool(p and uid in p.get("members", []))
+
+    def create_project(self, uid, name, canvas):
+        p = {"id": secrets.token_hex(8), "name": (name or "Projet").strip()[:60], "canvas": canvas,
+             "owner": uid, "members": [uid], "created": time.time()}
+        with self.lock:
+            self.projects.append(p)
+            self.save()
+        return p
+
+    def rename_project(self, pid, uid, name):
+        with self.lock:
+            p = next((p for p in self.projects if p["id"] == pid), None)
+            if not p or p["owner"] != uid:
+                return None
+            p["name"] = (name or p["name"]).strip()[:60]
+            self.save()
+            return p
+
+    def project_invite(self, pid, uid, username):
+        """Le créateur ajoute un membre par son pseudo de studio."""
+        with self.lock:
+            p = next((p for p in self.projects if p["id"] == pid), None)
+            if not p or p["owner"] != uid:
+                return None, "seul le créateur peut inviter"
+            target = next((u for u in self.users.values()
+                           if u["username"].lower() == (username or "").strip().lower()), None)
+            if not target:
+                return None, "compte inconnu"
+            if target["id"] in p["members"]:
+                return None, "déjà membre"
+            p["members"].append(target["id"])
+            self.save()
+            return p, None
+
+    # -- liens d'invitation
+    #
+    # Un lien vaut invitation : qui l'a peut rejoindre le projet, donc modifier ses
+    # calques et y engager ses crédits. Le jeton est donc imprévisible, limité en
+    # nombre d'usages et en durée, et révocable à tout moment par le créateur.
+    def project_invite_link(self, pid, uid, max_uses=10, ttl=config.INVITE_TTL):
+        with self.lock:
+            p = next((p for p in self.projects if p["id"] == pid), None)
+            if not p or p["owner"] != uid:
+                return None, "seul le créateur peut créer un lien"
+            link = {"token": secrets.token_urlsafe(24), "project": pid, "created": time.time(),
+                    "expires": time.time() + ttl, "maxUses": max(1, int(max_uses)), "uses": 0}
+            p.setdefault("links", []).append(link)
+            self.save()
+            return link, None
+
+    def project_links(self, pid, uid):
+        p = self.find_project(pid)
+        if not p or p["owner"] != uid:
+            return []
+        now = time.time()
+        return [dict(l, valid=l["uses"] < l["maxUses"] and l["expires"] > now)
+                for l in p.get("links", [])]
+
+    def project_revoke_link(self, pid, uid, token):
+        with self.lock:
+            p = next((p for p in self.projects if p["id"] == pid), None)
+            if not p or p["owner"] != uid:
+                return False
+            p["links"] = [l for l in p.get("links", []) if l["token"] != token]
+            self.save()
+            return True
+
+    def find_invite(self, token):
+        """Projet visé par un jeton encore valable, sinon (None, raison)."""
+        if not token:
+            return None, "lien absent"
+        with self.lock:
+            for p in self.projects:
+                for l in p.get("links", []):
+                    if secrets.compare_digest(l["token"], token):
+                        if l["uses"] >= l["maxUses"]:
+                            return None, "lien déjà utilisé au maximum"
+                        if l["expires"] <= time.time():
+                            return None, "lien expiré"
+                        return (p, l), None
+        return None, "lien inconnu ou révoqué"
+
+    def redeem_invite(self, token, uid):
+        """Fait entrer uid dans le projet du lien et décompte un usage."""
+        found, err = self.find_invite(token)
+        if err:
+            return None, err
+        with self.lock:
+            p, link = found
+            if uid in p["members"]:
+                return p, None  # déjà membre : on ne consomme pas le lien
+            p["members"].append(uid)
+            link["uses"] += 1
+            self.save()
+            return p, None
+
+    def project_remove(self, pid, uid, member_id):
+        """Le créateur retire un membre ; un membre peut se retirer lui-même."""
+        with self.lock:
+            p = next((p for p in self.projects if p["id"] == pid), None)
+            if not p:
+                return None, "projet inconnu"
+            if uid != p["owner"] and uid != member_id:
+                return None, "non autorisé"
+            if member_id == p["owner"]:
+                return None, "le créateur ne peut pas quitter son projet (supprime-le)"
+            if member_id not in p["members"]:
+                return None, "pas membre"
+            p["members"].remove(member_id)
+            self.save()
+            return p, None
+
+    def delete_project(self, pid, uid):
+        """Supprime le projet ; ses calques redeviennent personnels à leur auteur."""
+        with self.lock:
+            p = next((p for p in self.projects if p["id"] == pid), None)
+            if not p or p["owner"] != uid:
+                return False
+            for l in self.layers:
+                if l.get("project") == pid:
+                    l.pop("project", None)
+            self.projects = [x for x in self.projects if x["id"] != pid]
+            self.save()
+            return True
+
+    # -- calques
+    def can_edit_layer(self, uid, layer):
+        """Son propre calque, ou un calque d'un projet dont on est membre."""
+        if not layer:
+            return False
+        if layer.get("owner") == uid:
+            return True
+        pid = layer.get("project")
+        return bool(pid and self.is_member(uid, pid))
+
+    def layers_of(self, uid):
+        """Calques personnels + calques des projets dont on est membre."""
+        mine = self.project_ids_of(uid)
+        with self.lock:
+            return [l for l in self.layers
+                    if l.get("owner") == uid or l.get("project") in mine]
 
     def active_layers(self):
         with self.lock:
@@ -479,10 +643,11 @@ class Store:
             self.save()
 
     def delete_layer_of(self, uid, lid):
+        if not self.can_edit_layer(uid, self.find_layer(lid)):
+            return
         with self.lock:
-            if any(l["id"] == lid and l.get("owner") == uid for l in self.layers):
-                self.layers = [l for l in self.layers if l["id"] != lid]
-                self.save()
+            self.layers = [l for l in self.layers if l["id"] != lid]
+            self.save()
 
     def reorder_layers(self, ids):
         with self.lock:

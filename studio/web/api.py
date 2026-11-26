@@ -75,6 +75,13 @@ ROUTES = {
     ("POST", "/api/layers/save"): Route("save_layer"),
     ("POST", "/api/layers/delete"): Route("delete_layer"),
     ("POST", "/api/layers/reorder"): Route("reorder_layers"),
+    ("GET", "/api/projects"): Route("projects"),
+    ("POST", "/api/projects/create"): Route("project_create"),
+    ("POST", "/api/projects/rename"): Route("project_rename"),
+    ("POST", "/api/projects/invite"): Route("project_invite"),
+    ("POST", "/api/projects/remove"): Route("project_remove"),
+    ("POST", "/api/projects/delete"): Route("project_delete"),
+    ("POST", "/api/layers/project"): Route("layer_project"),
     ("GET", "/api/loot"): Route("loot"),
     ("POST", "/api/loot/claim"): Route("loot_claim"),
     ("POST", "/api/loot/open"): Route("loot_open"),
@@ -163,6 +170,82 @@ class Api:
         return Response({"success": True, "hasCookie": bool(u.get("cookie")), "canvas": u.get("canvas")})
 
     # ---------------------------------------------------------------- lecture
+    # ---------------------------------------------------------------- projets de groupe
+    def _project_view(self, p, uid):
+        """Projet tel que le voit un membre : membres nommés, calques, crédits du groupe."""
+        members = []
+        for mid in p.get("members", []):
+            u = self.store.users.get(mid) or {}
+            acc = self.engine.wallet.account(p["canvas"], u.get("cookie", "")) if u.get("cookie") else None
+            members.append({"id": mid, "username": u.get("username", "?"),
+                            "owner": mid == p["owner"], "me": mid == uid,
+                            "hasCookie": bool(u.get("cookie")),
+                            "credits": (acc or {}).get("credits"),
+                            "unlimited": bool((acc or {}).get("unlimited"))})
+        layers = [l for l in self.store.layers if l.get("project") == p["id"]]
+        pooled = sum(m["credits"] or 0 for m in members)
+        return {"id": p["id"], "name": p["name"], "canvas": p["canvas"],
+                "owner": p["owner"], "isOwner": p["owner"] == uid,
+                "members": members, "layers": len(layers),
+                "pooledCredits": pooled,
+                "unlimited": any(m["unlimited"] for m in members)}
+
+    def projects(self, req):
+        uid = req.user["id"]
+        return Response({"projects": [self._project_view(p, uid) for p in self.store.projects_of(uid)]})
+
+    def project_create(self, req):
+        name = (req.body.get("name") or "").strip()
+        if len(name) < 2:
+            return fail(400, "nom trop court")
+        p = self.store.create_project(req.user["id"], name, self._canvas(req, req.body.get("canvas")))
+        self.engine.journal.log(f"Projet « {p['name']} » créé par {req.user['username']}")
+        return Response({"success": True, "project": self._project_view(p, req.user["id"])})
+
+    def project_rename(self, req):
+        p = self.store.rename_project(req.body.get("id"), req.user["id"], req.body.get("name"))
+        if not p:
+            return fail(403, "seul le créateur peut renommer")
+        return Response({"success": True, "project": self._project_view(p, req.user["id"])})
+
+    def project_invite(self, req):
+        p, err = self.store.project_invite(req.body.get("id"), req.user["id"], req.body.get("username"))
+        if err:
+            return Response({"success": False, "message": err})
+        self.engine.guard.drop_targets()  # les crédits du nouveau membre entrent dans le pot
+        self.engine.journal.log(f"« {req.body.get('username')} » rejoint le projet « {p['name']} »")
+        return Response({"success": True, "project": self._project_view(p, req.user["id"])})
+
+    def project_remove(self, req):
+        p, err = self.store.project_remove(req.body.get("id"), req.user["id"], req.body.get("member"))
+        if err:
+            return Response({"success": False, "message": err})
+        self.engine.guard.drop_targets()
+        return Response({"success": True, "project": self._project_view(p, req.user["id"])})
+
+    def project_delete(self, req):
+        if not self.store.delete_project(req.body.get("id"), req.user["id"]):
+            return fail(403, "seul le créateur peut supprimer")
+        self.engine.guard.drop_targets()
+        return ok()
+
+    def layer_project(self, req):
+        """Rattache un calque à un projet, ou l'en détache (project = null)."""
+        uid, lid, pid = req.user["id"], req.body.get("id"), req.body.get("project")
+        layer = self.store.find_layer(lid)
+        if not self.store.can_edit_layer(uid, layer):
+            return fail(403, "calque d'un autre compte")
+        if pid and not self.store.is_member(uid, pid):
+            return fail(403, "pas membre de ce projet")
+        layer = {**layer}
+        if pid:
+            layer["project"] = pid
+        else:
+            layer.pop("project", None)
+        self.store.upsert_layer(layer)
+        self.engine.guard.drop_targets()
+        return Response({"success": True})
+
     # ---------------------------------------------------------------- coffres / inventaire / outils
     def loot(self, req):
         data = self.engine.loot.overview(self._cookie(req), max_age=0 if req.query.get("fresh") else config.LOOT_CACHE_TTL)
@@ -304,10 +387,21 @@ class Api:
         layer, uid = req.body.get("layer"), req.user["id"]
         if not layer or "id" not in layer:
             return fail(400, "calque invalide")
-        layer["owner"] = uid
         old = self.store.find_layer(layer["id"])
-        if old and old.get("owner") not in (None, uid):
-            return fail(403, "calque d'un autre compte")
+        if old:
+            if not self.store.can_edit_layer(uid, old):
+                return fail(403, "calque d'un autre compte")
+            # l'auteur d'origine et le projet ne changent pas via une simple sauvegarde
+            layer["owner"] = old.get("owner", uid)
+            if old.get("project"):
+                layer["project"] = old["project"]
+            else:
+                layer.pop("project", None)
+        else:
+            layer["owner"] = uid
+            pid = layer.get("project")
+            if pid and not self.store.is_member(uid, pid):
+                return fail(403, "pas membre de ce projet")
         self.store.upsert_layer(layer)
         if old and _layer_moved_or_disabled(old, layer):
             self.engine.guard.drop_targets()

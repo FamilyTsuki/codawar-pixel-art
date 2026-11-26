@@ -1,4 +1,4 @@
-"""Choix du cookie Codawar à utiliser pour une requête."""
+"""Choix du ou des cookies Codawar à utiliser pour une requête."""
 
 
 class CookieResolver:
@@ -15,3 +15,22 @@ class CookieResolver:
         """Cookie du propriétaire d'un calque, sinon un cookie quelconque."""
         u = self.store.users.get(uid) if uid else None
         return (u.get("cookie") if u else "") or self.any()
+
+    def for_layer(self, layer):
+        """Cookies qui peuvent poser ce calque, dans l'ordre des membres.
+
+        Calque personnel : le cookie de son auteur. Calque de projet : le cookie de
+        CHAQUE membre, pour que la pose et la défense consomment les crédits de tout
+        le groupe au lieu de ceux d'une seule personne.
+        """
+        pid = (layer or {}).get("project")
+        project = self.store.find_project(pid) if pid else None
+        if not project:
+            return [self.for_owner((layer or {}).get("owner"))]
+        cookies = []
+        for uid in project.get("members", []):
+            u = self.store.users.get(uid)
+            ck = (u or {}).get("cookie")
+            if ck and ck not in cookies:
+                cookies.append(ck)
+        return cookies or [self.for_owner((layer or {}).get("owner"))]
