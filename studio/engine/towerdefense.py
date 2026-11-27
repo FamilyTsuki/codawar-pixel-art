@@ -48,6 +48,9 @@ G_DEFAULT = 1.18          # a priori : santé +12 %/vague, plus de Bugs et plus 
 G_RANGE = (1.04, 1.45)
 OBS_MAX = 300
 HISTORY_MAX = 40
+FARM_MAX = 40             # vagues de farm dont on garde le rendement mesuré
+FARM_EMA = 0.3            # poids d'une nouvelle mesure de rendement
+FARM_EXPLORE_EVERY = 15   # une vague de farm sur N teste une vague voisine
 
 
 def _ts(iso):
@@ -126,11 +129,43 @@ class Brain:
         raw = raw or {}
         self.obs = collections.deque(raw.get("obs", []), maxlen=OBS_MAX)  # [P, vague, gagnée]
         self.history = collections.deque(raw.get("history", []), maxlen=HISTORY_MAX)
+        # vague -> [bits au plein tarif par vague (moyenne glissante), durée (s), nombre de mesures]
+        self.farm = {int(k): v for k, v in (raw.get("farm") or {}).items()}
+        self.farm_count = 0
         self.g, self.lk = G_DEFAULT, None
         self.fit()
 
     def to_raw(self):
-        return {"obs": list(self.obs), "history": list(self.history)}
+        return {"obs": list(self.obs), "history": list(self.history),
+                "farm": {str(k): v for k, v in self.farm.items()}}
+
+    # -- rendement du farm : bits par seconde selon la vague
+    def measure(self, wave, bits_full, secs):
+        """Enregistre une vague jouée : bits ramenés au plein tarif et durée réelle."""
+        if secs <= 0:
+            return
+        old = self.farm.get(wave)
+        if old:
+            a = FARM_EMA
+            self.farm[wave] = [old[0] * (1 - a) + bits_full * a, old[1] * (1 - a) + secs * a, old[2] + 1]
+        else:
+            self.farm[wave] = [bits_full, secs, 1]
+        if len(self.farm) > FARM_MAX:  # oublie la vague la moins mesurée
+            del self.farm[min(self.farm, key=lambda w: (self.farm[w][2], -abs(w - wave)))]
+
+    def rate(self, wave):
+        """Bits (plein tarif) par seconde de cycle pour une vague mesurée, sinon None."""
+        f = self.farm.get(wave)
+        if not f or f[1] <= 0:
+            return None
+        return f[0] / (f[1] + config.TD_WAVE_GAP)
+
+    def duration(self, wave):
+        """Durée attendue d'une vague (s) d'après les mesures proches, sinon None."""
+        if not self.farm:
+            return None
+        w = min(self.farm, key=lambda x: abs(x - wave))
+        return self.farm[w][1] if abs(w - wave) <= max(3, wave * 0.1) else None
 
     def observe(self, p, wave, won):
         if p > 0:
@@ -183,6 +218,27 @@ class Brain:
         while best in losses and best > 1:
             best -= 1
         return max(1, min(record, best))
+
+    def farm_wave(self, p, record):
+        """Vague de farm qui rapporte le plus de bits par seconde (<= la plus haute gagnable).
+
+        Une vague basse finit plus vite mais paie moins par kill : on mesure. Les vagues
+        candidates (la plus haute gagnable, puis 3/4, 1/2, 1/4) sont essayées une fois, puis
+        on garde la meilleure en testant de temps en temps ses voisines (montée de colline)."""
+        top = self.best_farm(p, record)
+        cands = sorted({max(1, round(top * f)) for f in (1, 0.75, 0.5, 0.25)}, reverse=True)
+        for w in cands:
+            if w not in self.farm:
+                return w
+        known = [w for w in self.farm if w <= top]
+        best = max(known, key=self.rate, default=top)
+        self.farm_count += 1
+        if self.farm_count % FARM_EXPLORE_EVERY == 0:
+            step = max(1, top // 20)
+            for w in (best + step, best - step):
+                if 1 <= w <= top and (w not in self.farm or self.farm[w][2] < 3):
+                    return w
+        return best
 
 
 # ---------------------------------------------------------------- planification
@@ -342,8 +398,10 @@ class TowerDefense:
         brain = self.brain(cookie)
         horizon = _num(prefs.get("tdHorizonDays"), config.TD_HORIZON_DAYS, 1, 365)
         keep = _num(prefs.get("tdKeepBits"), 0, 0, 10 ** 9)
+        push = bool(prefs.get("tdPush"))  # dépense aussi sur les options non rentables
         for _ in range(40):
-            opts = [o for o in plan(data, brain, horizon, keep) if o["roi"] >= 1]
+            opts = [o for o in plan(data, brain, horizon, keep)
+                    if o["roi"] >= 1 or (push and o["jalons"] > 0)]
             if not opts:
                 break
             best = opts[0]
@@ -367,19 +425,42 @@ class TowerDefense:
         return data
 
     # -- vagues
-    def run_wave(self, cookie, wave, speed=1):
-        """Lance la vague `wave` et attend son issue. Renvoie la valeur de fin, ou None."""
+    @staticmethod
+    def _run_wait(run, t0):
+        """Attente (s) annoncée par le serveur dans la vague lancée, sinon None."""
+        for k, v in (run or {}).items():
+            kl = k.lower()
+            if isinstance(v, str) and ("end" in kl or "finish" in kl):
+                ts = _ts(v)
+                if ts:
+                    return ts - t0
+            if isinstance(v, (int, float)) and "duration" in kl:
+                return v / 1000 if "ms" in kl or v > 1000 else v
+        return None
+
+    def run_wave(self, cookie, wave, speed=1, expected=None):
+        """Lance la vague `wave` et attend son issue. Renvoie la valeur de fin, ou None.
+
+        `expected` : durée estimée (s) d'après les vagues déjà jouées. La valeur renvoyée
+        porte `_secs`, la durée réelle mesurée entre le départ et la fin acceptée."""
         start = self._retry(cookie, "onStartTowerDefenseWave", [str(uuid.uuid4()), wave, speed],
-                            {"TOWER_DEFENSE_WAVE_START_TOO_SOON": 2, "SERVER_UNAVAILABLE": 2}, 8)
+                            {"TOWER_DEFENSE_WAVE_START_TOO_SOON": 1, "SERVER_UNAVAILABLE": 2}, 12)
+        t0 = time.time()
         if not self._ok(start):
             self.journal.log_throttled(("td-wave",), f"Vague {wave} refusée : "
                                        f"{start.get('code') or start.get('message')}",
                                        "warning", every=3600, to=audience([cookie]))
             return None
-        run_id = ((start.get("value") or {}).get("run") or {}).get("id")
+        run = (start.get("value") or {}).get("run") or {}
+        run_id = run.get("id")
         if not run_id:
             return None
-        time.sleep(config.TD_WAVE_FIRST_POLL)
+        if not getattr(self, "_run_logged", False):  # aide à repérer les champs de durée
+            self._run_logged = True
+            print(f"towerdefense run fields: {sorted(run)}", flush=True)
+        announced = self._run_wait(run, t0)
+        wait = announced if announced is not None else (expected * 0.9 if expected else None)
+        time.sleep(max(1.0, wait) if wait is not None else config.TD_WAVE_FIRST_POLL)
         # même requestId à chaque essai, comme le navigateur : la fin n'est comptée qu'une fois
         req = str(uuid.uuid4())
         tries = max(1, int(config.TD_WAVE_MAX_WAIT / config.TD_WAVE_POLL))
@@ -392,7 +473,8 @@ class TowerDefense:
                                        f"{end.get('code') or end.get('message')}",
                                        "warning", every=3600, to=audience([cookie]))
             return None
-        out = end.get("value") or {}
+        out = dict(end.get("value") or {})
+        out["_secs"] = time.time() - t0
         self._remember(cookie, out.get("overview"))
         return out
 
@@ -406,7 +488,7 @@ class TowerDefense:
             return record + 1, True
         kills = data.get("killBitsToday") or {}
         if record > 0 and (kills.get("bits") or 0) < (kills.get("maximumBits") or 0):
-            return brain.best_farm(p, record), False
+            return brain.farm_wave(p, record), False
         return None
 
     def play(self, cookie, prefs):
@@ -429,18 +511,24 @@ class TowerDefense:
         wave, frontier = pick
         p = force(data.get("towers") or [])
         speed = max(data.get("speeds") or [1])
+        kills = data.get("killBitsToday") or {}
         self._set_activity(cookie, f"joue la vague {wave}" + (" (jalon)" if frontier else " (farm)"))
-        out = self.run_wave(cookie, wave, speed)
+        out = self.run_wave(cookie, wave, speed, expected=brain.duration(wave))
         if out is None:
             brain.observe(p, wave, False) if frontier else None  # évite de reboucler sur un refus
             self._set_activity(cookie, f"vague {wave} refusée")
             return False
         won = out.get("outcome") == "won"
         gained = out.get("bitsGained") or 0
-        brain.observe(p, out.get("wave") or wave, won)
+        secs = out.get("_secs") or 0
+        played = out.get("wave") or wave
+        brain.observe(p, played, won)
+        full = _full_rate_bits(gained, kills)
         with self._lock:
-            brain.history.append({"t": int(time.time()), "wave": out.get("wave") or wave, "won": won,
-                                  "bits": gained, "frontier": frontier,
+            if won and full is not None:
+                brain.measure(played, full, secs)
+            brain.history.append({"t": int(time.time()), "wave": played, "won": won,
+                                  "bits": gained, "frontier": frontier, "secs": round(secs, 1),
                                   "record": bool(out.get("isNewRecord"))})
         self._set_activity(cookie, f"vague {wave} {'gagnée' if won else 'perdue'}")
         if frontier or out.get("isNewRecord"):
@@ -514,6 +602,17 @@ class TowerDefense:
             act = self._activity.get(account_key(cookie))
             history = list(brain.history)[-24:]
         pred = brain.waves(p)
+        record = data.get("recordJalon") or 0
+        farm = None
+        if record > 0 and p > 0:
+            with self._lock:
+                fw = brain.best_farm(p, record)
+                known = [w for w in brain.farm if w <= fw]
+                bw = max(known, key=brain.rate, default=None)
+                if bw is not None:
+                    f = brain.farm[bw]
+                    farm = {"wave": bw, "bitsPerMin": round(brain.rate(bw) * 60, 1),
+                            "secs": round(f[1], 1), "tested": len(known), "top": fw}
         return {
             "bits": data.get("bitBalance"),
             "pending": data.get("pendingBits"),
@@ -549,6 +648,8 @@ class TowerDefense:
                 "frontierBlocked": brain.lost_frontier((data.get("recordJalon") or 0) + 1, p),
                 "horizonDays": horizon,
                 "keepBits": keep,
+                "push": bool(prefs.get("tdPush")),
+                "farm": farm,
                 "bitsPerDay": round((data.get("yieldPerHour") or 0) * 24 + (kills.get("maximumBits") or 0)),
                 "options": [{k: (round(v, 2) if isinstance(v, float) else v) for k, v in o.items()}
                             for o in plan(data, brain, horizon, keep)[:6]],
@@ -557,6 +658,19 @@ class TowerDefense:
                 "history": history,
             },
         }
+
+
+def _full_rate_bits(gained, kills):
+    """Bits d'une vague ramenés au plein tarif (au-delà de fullRateBits un kill paie 1/4).
+
+    None si la mesure est faussée par le plafond du jour ou si le compteur est inconnu."""
+    b0, full, cap = kills.get("bits"), kills.get("fullRateBits"), kills.get("maximumBits")
+    if b0 is None or not full:
+        return float(gained)
+    if cap and b0 + gained >= cap:
+        return None
+    at_full = max(0, min(gained, full - b0))
+    return at_full + (gained - at_full) * 4
 
 
 def _num(v, default, lo, hi):

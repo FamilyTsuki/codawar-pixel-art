@@ -1929,6 +1929,9 @@ CODA</textarea
               <label class="td-switch"><input type="checkbox" id="tdUpgrade" /><i></i>
                 <span><b>Investir</b> — achète l'amélioration ou le slot le plus rentable, seulement
                   s'il se rembourse dans l'horizon</span></label>
+              <label class="td-switch"><input type="checkbox" id="tdPush" /><i></i>
+                <span><b>Pousser</b> — avec Investir, dépense aussi au-delà de la réserve sur la
+                  meilleure option même non rentable, pour monter de jalon</span></label>
               <div class="td-params">
                 <label>Horizon <input type="number" id="tdHorizon" min="1" max="365" /> j</label>
                 <label>Garder <input type="number" id="tdKeep" min="0" step="10" /> bits</label>
@@ -4754,6 +4757,10 @@ CODA</textarea
           `difficulté <b>×${tdNum(b.growth, 3)}</b>/vague`,
           `jalon suivant <b>${b.frontierBlocked ? "bloqué, à renforcer" : "à tenter"}</b>`,
           `<b>${tdNum(b.observations)}</b> vagues apprises`,
+          b.farm
+            ? `farm <b>vague ${b.farm.wave}</b> · ${tdNum(b.farm.bitsPerMin, 1)} bits/min · ${tdNum(b.farm.secs, 1)} s` +
+              ` <span title="vagues testées sur 1..${b.farm.top}">(${b.farm.tested} testées)</span>`
+            : `farm <b>en mesure…</b>`,
         ]
           .map((x) => `<span>${x}</span>`)
           .join("");
@@ -4809,6 +4816,7 @@ CODA</textarea
       $("tdAuto").onchange = (e) => tdPref({ autoTowerDefense: e.target.checked });
       $("tdWaves").onchange = (e) => tdPref({ autoTowerDefenseWaves: e.target.checked });
       $("tdUpgrade").onchange = (e) => tdPref({ autoTowerDefenseUpgrade: e.target.checked });
+      $("tdPush").onchange = (e) => tdPref({ tdPush: e.target.checked });
       $("tdHorizon").onchange = (e) => tdPref({ tdHorizonDays: Math.max(1, +e.target.value || 45) });
       $("tdKeep").onchange = (e) => tdPref({ tdKeepBits: Math.max(0, +e.target.value || 0) });
       // compte à rebours chaque seconde, relecture toutes les 15 s quand l'onglet est visible
@@ -5015,6 +5023,7 @@ CODA</textarea
         $("tdAuto").checked = !!(S.prefs || {}).autoTowerDefense;
         $("tdWaves").checked = !!(S.prefs || {}).autoTowerDefenseWaves;
         $("tdUpgrade").checked = !!(S.prefs || {}).autoTowerDefenseUpgrade;
+        $("tdPush").checked = !!(S.prefs || {}).tdPush;
         loadLoot(false);
         loadTd(false);
         loadProjects();
