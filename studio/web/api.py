@@ -359,7 +359,7 @@ class Api:
 
     # ---------------------------------------------------------------- tower defense
     def td(self, req):
-        snap = self.engine.td.snapshot(self._cookie(req))
+        snap = self.engine.td.snapshot(self._cookie(req), req.user.get("prefs") or {})
         if not snap:
             return Response({"success": False, "message": "Tower Defense illisible (cookie Codawar ?)"})
         return Response({"success": True, **snap})

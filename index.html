@@ -385,6 +385,316 @@
       .modal-note.err {
         color: var(--err);
       }
+      /* ---------- Tower Defense */
+      .td-kpis {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+        gap: 8px;
+      }
+      .td-kpi {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 10px 12px;
+        background: var(--panel2);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+      .td-kpi span {
+        font-size: 11px;
+        color: var(--mute);
+      }
+      .td-kpi b {
+        font-size: 20px;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: -0.01em;
+      }
+      .td-kpi i {
+        font-style: normal;
+        font-size: 11px;
+        color: var(--mute);
+      }
+      .td-kpi i.up {
+        color: var(--ok);
+      }
+      .td-bars {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        margin: 14px 0;
+      }
+      .td-bar-label,
+      .td-bar-foot {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 12px;
+        gap: 8px;
+      }
+      .td-bar-label span {
+        color: var(--mute);
+      }
+      .td-bar-label b {
+        font-variant-numeric: tabular-nums;
+      }
+      .td-bar {
+        position: relative;
+        height: 8px;
+        margin: 5px 0;
+        background: var(--panel2);
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        overflow: hidden;
+      }
+      .td-bar > div {
+        height: 100%;
+        width: 0;
+        background: var(--acc);
+        transition: width 0.4s;
+      }
+      .td-bar.warn > div {
+        background: var(--warn);
+      }
+      .td-bar.full > div {
+        background: var(--err);
+      }
+      .td-kill > div {
+        background: var(--ok);
+      }
+      .td-bar em {
+        position: absolute;
+        top: -1px;
+        bottom: -1px;
+        width: 1px;
+        background: var(--mute);
+      }
+      .td-small {
+        padding: 3px 10px;
+        font-size: 12px;
+      }
+      .td-map-wrap {
+        background: #0d0e12;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 6px;
+      }
+      .td-map {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+      .td-map .slot-free {
+        cursor: help;
+      }
+      .td-towers {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin: 10px 0 14px;
+      }
+      .td-tower {
+        display: grid;
+        grid-template-columns: 36px 1fr auto;
+        gap: 10px;
+        align-items: center;
+        padding: 6px 8px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        font-size: 12px;
+      }
+      .td-tower.reserve {
+        border-style: dashed;
+        opacity: 0.8;
+      }
+      .td-tower canvas {
+        width: 36px;
+        height: 36px;
+        image-rendering: pixelated;
+      }
+      .td-tower .nm {
+        font-weight: 600;
+        font-size: 13px;
+      }
+      .td-tower .meta {
+        color: var(--mute);
+      }
+      .td-tower .lv {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+      .td-rar {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 0 6px;
+        border-radius: 8px;
+        font-size: 10px;
+        font-weight: 600;
+        border: 1px solid currentColor;
+      }
+      .td-pilot {
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--panel2);
+      }
+      .td-pilot-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+      .td-activity {
+        font-size: 11px;
+        color: var(--mute);
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        text-align: right;
+      }
+      .td-activity.live::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--ok);
+        box-shadow: 0 0 0 3px rgba(111, 220, 140, 0.18);
+        flex: none;
+      }
+      .td-switch {
+        display: grid;
+        grid-template-columns: 32px 1fr;
+        gap: 10px;
+        align-items: start;
+        padding: 7px 0;
+        font-size: 12px;
+        color: var(--mute);
+        cursor: pointer;
+      }
+      .td-switch b {
+        color: var(--fg);
+      }
+      .td-switch input {
+        position: absolute;
+        opacity: 0;
+        pointer-events: none;
+      }
+      .td-switch i {
+        position: relative;
+        width: 32px;
+        height: 18px;
+        border-radius: 9px;
+        background: var(--sel);
+        border: 1px solid var(--line);
+        transition: background 0.2s;
+      }
+      .td-switch i::after {
+        content: "";
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: var(--mute);
+        transition: transform 0.2s, background 0.2s;
+      }
+      .td-switch input:checked + i {
+        background: var(--acc-dim);
+        border-color: var(--acc);
+      }
+      .td-switch input:checked + i::after {
+        transform: translateX(14px);
+        background: var(--acc);
+      }
+      .td-switch input:focus-visible + i {
+        outline: 2px solid var(--acc);
+        outline-offset: 2px;
+      }
+      .td-params {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px;
+        margin: 6px 0 12px 42px;
+        font-size: 12px;
+        color: var(--mute);
+      }
+      .td-params input {
+        width: 70px;
+        margin: 0 4px;
+        padding: 3px 6px;
+      }
+      .td-brain {
+        border-top: 1px solid var(--line);
+        padding-top: 10px;
+      }
+      .td-brain-stats {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 14px;
+        font-size: 12px;
+        color: var(--mute);
+      }
+      .td-brain-stats b {
+        color: var(--fg);
+        font-variant-numeric: tabular-nums;
+      }
+      .td-sub {
+        margin: 12px 0 6px;
+        font-size: 11px;
+        color: var(--mute);
+      }
+      .td-plan {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .td-opt {
+        display: grid;
+        grid-template-columns: 1fr auto auto;
+        gap: 10px;
+        align-items: center;
+        font-size: 12px;
+        padding: 5px 8px;
+        border-radius: 6px;
+        background: var(--panel);
+      }
+      .td-opt .roi {
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+      }
+      .td-opt .roi.good {
+        color: var(--ok);
+      }
+      .td-opt .roi.bad {
+        color: var(--mute);
+      }
+      .td-opt .cost {
+        color: var(--mute);
+        font-variant-numeric: tabular-nums;
+      }
+      .td-hist {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+      }
+      .td-hist span {
+        min-width: 30px;
+        padding: 2px 6px;
+        border-radius: 5px;
+        font-size: 11px;
+        text-align: center;
+        font-variant-numeric: tabular-nums;
+        background: rgba(111, 220, 140, 0.14);
+        color: var(--ok);
+      }
+      .td-hist span.lost {
+        background: rgba(255, 107, 107, 0.14);
+        color: var(--err);
+      }
+      .td-hist span.front {
+        outline: 1px solid currentColor;
+      }
       .loot-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
@@ -1573,36 +1883,67 @@ CODA</textarea
             <h2>Derniers gains</h2>
             <div id="lootLast" class="hint">—</div>
           </section>
-          <section>
+          <section id="tdSec">
             <h2>
               Tower Defense <span class="grow"></span
               ><span class="dots" id="dotsTd"><i></i><i></i><i></i></span
               ><button id="tdRefresh" style="padding: 3px 9px">Rafraîchir</button>
             </h2>
             <div id="tdWarn" class="hint" style="color: var(--err)"></div>
-            <div class="loot-grid">
-              <div class="loot-card">
-                <b>Bits en attente</b>
-                <span id="tdPending" class="hint"></span>
-                <button id="tdCollect">Collecter</button>
+
+            <div class="td-kpis">
+              <div class="td-kpi"><span>Solde</span><b id="tdBits">—</b><i>bits</i></div>
+              <div class="td-kpi"><span>Jalon</span><b id="tdJalon">—</b><i id="tdPred"></i></div>
+              <div class="td-kpi"><span>Rendement</span><b id="tdYieldH">—</b><i>bits/h</i></div>
+              <div class="td-kpi"><span>Revenu max</span><b id="tdDay">—</b><i>bits/jour</i></div>
+            </div>
+
+            <div class="td-bars">
+              <div class="td-bar-row">
+                <div class="td-bar-label"><span>En attente</span><b id="tdPending">—</b></div>
+                <div class="td-bar"><div id="tdPendBar"></div></div>
+                <div class="td-bar-foot"><span id="tdCap" class="hint"></span
+                  ><button id="tdCollect" class="td-small">Collecter</button></div>
               </div>
-              <div class="loot-card">
-                <b>Rendement</b>
-                <span id="tdYield" class="hint"></span>
-              </div>
-              <div class="loot-card">
-                <b>Record</b>
-                <span id="tdRecord" class="hint"></span>
+              <div class="td-bar-row">
+                <div class="td-bar-label"><span>Kills aujourd'hui</span><b id="tdKills">—</b></div>
+                <div class="td-bar td-kill"><div id="tdKillBar"></div><em id="tdKillMark"></em></div>
+                <div class="td-bar-foot"><span id="tdKillHint" class="hint"></span></div>
               </div>
             </div>
-            <label class="row" style="margin-top: 10px; gap: 8px">
-              <input type="checkbox" id="tdAuto" /> Collecter automatiquement les
-              bits de <b>ce compte</b> avant le plafond (vérifié toutes les 10 min)
-            </label>
-            <div class="hint" style="margin-top: 6px">
-              Le studio ne joue pas les vagues (leur issue dépend de la puissance
-              de tes tourelles, décidée par le serveur) : il récupère seulement les
-              bits produits, pour qu'aucun ne soit perdu au plafond.
+
+            <div class="td-map-wrap"><svg id="tdMap" class="td-map"></svg></div>
+            <div id="tdTowers" class="td-towers"></div>
+
+            <div class="td-pilot">
+              <div class="td-pilot-head">
+                <b>Pilote automatique</b>
+                <span id="tdActivity" class="td-activity"></span>
+              </div>
+              <label class="td-switch"><input type="checkbox" id="tdAuto" /><i></i>
+                <span><b>Collecte</b> — récupère les bits avant le plafond de 12 h</span></label>
+              <label class="td-switch"><input type="checkbox" id="tdWaves" /><i></i>
+                <span><b>Vagues</b> — tente le jalon suivant, puis farme la plus haute vague gagnable
+                  jusqu'au plafond de kills ; replace les tourelles là où elles couvrent le plus de chemin</span></label>
+              <label class="td-switch"><input type="checkbox" id="tdUpgrade" /><i></i>
+                <span><b>Investir</b> — achète l'amélioration ou le slot le plus rentable, seulement
+                  s'il se rembourse dans l'horizon</span></label>
+              <div class="td-params">
+                <label>Horizon <input type="number" id="tdHorizon" min="1" max="365" /> j</label>
+                <label>Garder <input type="number" id="tdKeep" min="0" step="10" /> bits</label>
+              </div>
+              <div class="td-brain">
+                <div class="td-brain-stats" id="tdBrain"></div>
+                <div class="td-sub">Achats classés par rentabilité</div>
+                <div id="tdPlan" class="td-plan"></div>
+                <div class="td-sub">Dernières vagues</div>
+                <div id="tdHist" class="td-hist"></div>
+              </div>
+            </div>
+            <div class="hint" style="margin-top: 8px">
+              L'issue des vagues est calculée par le serveur : le studio joue comme le
+              navigateur. Le pilote apprend sur tes victoires et défaites quelle force bat
+              quelle vague, et en déduit ce que vaut chaque achat (1 jalon = +6 bits/jour).
             </div>
           </section>
         </div>
@@ -4231,8 +4572,41 @@ CODA</textarea
       $("prjRefresh").onclick = loadProjects;
       $("sCookieWizard").onclick = () => openCookieWizard(false);
 
-      // ------------------------------------------------------------------ Tower Defense : collecte des bits
+      // ------------------------------------------------------------------ Tower Defense : pilote automatique
       S.td = null;
+      const TD_RARITY = {
+        common: ["Commun", "#9aa3b2"],
+        uncommon: ["Peu commun", "#6fdc8c"],
+        rare: ["Rare", "#51a8f4"],
+        epic: ["Épique", "#b78cff"],
+        legendary: ["Légendaire", "#f5c26b"],
+        mythic: ["Mythique", "#ff6b9d"],
+      };
+      const tdNum = (v, d = 0) =>
+        v == null ? "—" : Number(v).toLocaleString("fr-FR", { maximumFractionDigits: d });
+      const tdSprites = new Map();
+      // sprite 16x16 (palette + lignes de chiffres) -> dataURL
+      function tdSprite(sp) {
+        if (!sp || !sp.rows) return "";
+        const k = JSON.stringify(sp);
+        if (tdSprites.has(k)) return tdSprites.get(k);
+        const c = document.createElement("canvas");
+        c.width = sp.rows[0].length;
+        c.height = sp.rows.length;
+        const g = c.getContext("2d");
+        sp.rows.forEach((row, y) =>
+          [...row].forEach((ch, x) => {
+            const col = sp.palette[parseInt(ch, 36)];
+            if (ch !== "." && col) {
+              g.fillStyle = col;
+              g.fillRect(x, y, 1, 1);
+            }
+          }),
+        );
+        const url = c.toDataURL();
+        tdSprites.set(k, url);
+        return url;
+      }
       async function loadTd(fresh) {
         busy("dotsTd", true);
         try {
@@ -4243,6 +4617,7 @@ CODA</textarea
             S.td = null;
             return;
           }
+          d._at = Date.now();
           S.td = d;
           renderTd();
         } catch {
@@ -4250,42 +4625,187 @@ CODA</textarea
           busy("dotsTd", false);
         }
       }
+      function tdCapLeft(d) {
+        return d.capInSeconds == null ? null : d.capInSeconds - (Date.now() - d._at) / 1000;
+      }
+      function renderTdLive() {
+        const d = S.td;
+        if (!d) return;
+        const left = tdCapLeft(d);
+        const total = (d.idleCapHours || 12) * 3600;
+        const ratio = d.capReached ? 1 : left == null ? 0 : Math.min(1, Math.max(0, 1 - left / total));
+        const bar = $("tdPendBar");
+        bar.style.width = ratio * 100 + "%";
+        bar.parentElement.className = "td-bar" + (ratio >= 1 ? " full" : ratio > 0.8 ? " warn" : "");
+        $("tdCap").textContent = d.capReached
+          ? "plafond atteint : la production est perdue"
+          : left != null
+            ? "plafond dans " + fmtDur(left)
+            : "";
+      }
       function renderTd() {
         const d = S.td;
         if (!d) return;
+        const b = d.brain || {};
         $("tdWarn").textContent = d.readOnly ? "Tower Defense en lecture seule." : "";
-        const cap =
-          d.capReached
-            ? " · plafond atteint (bits perdus !)"
-            : d.capInSeconds != null
-              ? " · plafond dans " + fmtDur(d.capInSeconds)
-              : "";
-        $("tdPending").textContent = `${d.pending ?? "?"} bits${cap}`;
+        $("tdBits").textContent = tdNum(d.bits);
+        $("tdJalon").textContent = tdNum(d.recordJalon);
+        $("tdPred").textContent =
+          b.predictedWave != null ? `≈ ${tdNum(b.predictedWave, 1)} prédit` : "record";
+        $("tdPred").className = b.predictedWave > d.recordJalon ? "up" : "";
+        $("tdYieldH").textContent = tdNum(d.yieldPerHour, 2);
+        $("tdDay").textContent = tdNum(b.bitsPerDay);
+        $("tdPending").textContent = tdNum(d.pending) + " bits";
         $("tdCollect").disabled = !((d.pending ?? 0) > 0) || d.readOnly;
-        $("tdYield").textContent = `${d.yieldPerHour ?? "?"} bits/h · ${d.bits ?? "?"} bits au total`;
-        $("tdRecord").textContent = `Jalon ${d.recordJalon ?? "?"} · puissance ${d.totalPower ?? "?"}`;
+        // kills : plein tarif jusqu'à fullRate, puis quart de tarif jusqu'au max
+        const kmax = d.killBitsMax || 0;
+        $("tdKills").textContent = `${tdNum(d.killBits)} / ${tdNum(kmax)}`;
+        $("tdKillBar").style.width = kmax ? Math.min(100, ((d.killBits || 0) / kmax) * 100) + "%" : "0";
+        $("tdKillMark").style.left = kmax ? ((d.killBitsFull || 0) / kmax) * 100 + "%" : "0";
+        $("tdKillHint").textContent =
+          (d.killBits || 0) >= kmax
+            ? "plafond du jour atteint"
+            : (d.killBits || 0) >= (d.killBitsFull || 0)
+              ? "tarif réduit (÷4) jusqu'au plafond"
+              : `plein tarif jusqu'à ${d.killBitsFull}`;
+        renderTdLive();
+        renderTdMap(d);
+        renderTdTowers(d);
+        renderTdPilot(d);
+      }
+      function renderTdMap(d) {
+        const m = d.map;
+        const T = 20; // pixels SVG par tuile
+        const svg = $("tdMap");
+        svg.setAttribute("viewBox", `0 0 ${m.w * T} ${m.h * T}`);
+        const pts = m.path.map(([x, y]) => `${x * T},${y * T}`).join(" ");
+        const owned = new Set(d.ownedSlots);
+        const bySlot = {};
+        d.towers.forEach((t) => t.slot != null && (bySlot[t.slot] = t));
+        let h = `<polyline points="${pts}" fill="none" stroke="#2a2c35" stroke-width="${T * 0.9}" stroke-linejoin="round"/>`;
+        h += `<polyline points="${pts}" fill="none" stroke="#3a3d49" stroke-width="2" stroke-dasharray="6 6"/>`;
+        // portées d'abord, sous les slots
+        m.slots.forEach(([c, r], i) => {
+          const t = bySlot[i + 1];
+          if (t && t.range)
+            h += `<circle cx="${(c + 0.5) * T}" cy="${(r + 0.5) * T}" r="${t.range * T}" fill="rgba(81,233,244,0.05)" stroke="rgba(81,233,244,0.25)" stroke-dasharray="3 4"/>`;
+        });
+        m.slots.forEach(([c, r], i) => {
+          const n = i + 1;
+          const x = c * T,
+            y = r * T;
+          const t = bySlot[n];
+          if (t) {
+            h += `<rect x="${x}" y="${y}" width="${T}" height="${T}" rx="3" fill="#1b1c22" stroke="var(--acc)"/>`;
+            h += `<image href="${tdSprite(t.sprite)}" x="${x + 1}" y="${y + 1}" width="${T - 2}" height="${T - 2}" style="image-rendering:pixelated"><title>${escHtml(t.name)} niv. ${t.level} — slot ${n}</title></image>`;
+            h += `<text x="${x + T - 1}" y="${y + T + 8}" font-size="8" text-anchor="end" fill="var(--mute)">${t.level}</text>`;
+          } else if (owned.has(n)) {
+            h += `<rect x="${x + 1}" y="${y + 1}" width="${T - 2}" height="${T - 2}" rx="3" fill="none" stroke="var(--acc-dim)"><title>Slot ${n} libre</title></rect>`;
+          } else {
+            h += `<rect class="slot-free" x="${x + 2}" y="${y + 2}" width="${T - 4}" height="${T - 4}" rx="3" fill="none" stroke="#3a3d49" stroke-dasharray="2 2"><title>Slot ${n} — ${d.nextSlotCost ?? "?"} bits</title></rect>`;
+          }
+        });
+        h += `<text x="2" y="${2.5 * T - 12}" font-size="9" fill="var(--mute)">entrée</text>`;
+        h += `<text x="${m.w * T - 2}" y="${9.5 * T - 12}" font-size="9" fill="var(--mute)" text-anchor="end">sortie</text>`;
+        svg.innerHTML = h;
+      }
+      function renderTdTowers(d) {
+        const ts = [...d.towers].sort(
+          (a, b) => (a.slot == null) - (b.slot == null) || (b.strength || b.dps) - (a.strength || a.dps),
+        );
+        $("tdTowers").innerHTML = ts
+          .map((t) => {
+            const [rn, rc] = TD_RARITY[t.rarity] || [t.rarity || "", "var(--mute)"];
+            const where = t.slot != null ? `slot ${t.slot}` : "réserve";
+            const up = t.upgradeCost == null ? "niveau max" : `amélioration ${tdNum(t.upgradeCost)} bits`;
+            return `<div class="td-tower${t.slot == null ? " reserve" : ""}" title="${escHtml(t.effect || "")}">
+              <canvas data-sprite></canvas>
+              <div><div class="nm">${escHtml(t.name)}<span class="td-rar" style="color:${rc}">${escHtml(rn)}</span></div>
+                <div class="meta">${tdNum(t.dps)} DPS · portée ${t.range ?? "?"} · ${where} · ${up}</div></div>
+              <div class="lv"><b>niv. ${t.level}</b>${t.strength != null ? `<div class="meta">force ${tdNum(t.strength)}</div>` : ""}</div>
+            </div>`;
+          })
+          .join("");
+        // les sprites passent par <img> dans un canvas pour rester nets
+        $("tdTowers")
+          .querySelectorAll("canvas[data-sprite]")
+          .forEach((cv, i) => {
+            const img = new Image();
+            img.onload = () => {
+              cv.width = img.width;
+              cv.height = img.height;
+              cv.getContext("2d").drawImage(img, 0, 0);
+            };
+            img.src = tdSprite(ts[i].sprite);
+          });
+      }
+      function renderTdPilot(d) {
+        const b = d.brain || {};
+        const p = S.prefs || {};
+        const on = p.autoTowerDefenseWaves || p.autoTowerDefenseUpgrade;
+        const act = $("tdActivity");
+        act.textContent = on ? b.activity || "démarre…" : "en pause";
+        act.className = "td-activity" + (on && b.activityAge != null && b.activityAge < 700 ? " live" : "");
+        if (document.activeElement !== $("tdHorizon")) $("tdHorizon").value = b.horizonDays ?? 45;
+        if (document.activeElement !== $("tdKeep")) $("tdKeep").value = b.keepBits ?? 0;
+        $("tdBrain").innerHTML = [
+          `force <b>${tdNum(b.force)}</b>`,
+          `difficulté <b>×${tdNum(b.growth, 3)}</b>/vague`,
+          `jalon suivant <b>${b.frontierBlocked ? "bloqué, à renforcer" : "à tenter"}</b>`,
+          `<b>${tdNum(b.observations)}</b> vagues apprises`,
+        ]
+          .map((x) => `<span>${x}</span>`)
+          .join("");
+        const opts = b.options || [];
+        $("tdPlan").innerHTML = opts.length
+          ? opts
+              .map((o) => {
+                const good = o.roi >= 1;
+                const pay = o.payback != null ? `remboursé en ${tdNum(o.payback)} j` : "aucun gain prévu";
+                return `<div class="td-opt" title="${pay} · +${tdNum(o.jalons, 2)} jalon">
+                  <span>${escHtml(o.label)}</span>
+                  <span class="cost">${tdNum(o.cost)} bits${o.affordable ? "" : " · épargne"}</span>
+                  <span class="roi ${good ? "good" : "bad"}">×${tdNum(o.roi, 2)}</span></div>`;
+              })
+              .join("")
+          : `<div class="hint">Rien à acheter pour l'instant.</div>`;
+        const hist = b.history || [];
+        $("tdHist").innerHTML = hist.length
+          ? hist
+              .slice()
+              .reverse()
+              .map(
+                (h) =>
+                  `<span class="${h.won ? "" : "lost"}${h.frontier ? " front" : ""}" title="${new Date(h.t * 1000).toLocaleTimeString("fr-FR")} · ${h.won ? "gagnée" : "perdue"}${h.frontier ? " (jalon)" : ""}${h.bits ? " · +" + h.bits + " bits" : ""}">${h.wave}</span>`,
+              )
+              .join("")
+          : `<div class="hint">Aucune vague jouée par le pilote.</div>`;
       }
       $("tdCollect").onclick = async () => {
         const r = await post("/api/td/collect", {});
         if (r.status === "success") {
           const v = r.value || {};
-          const g = v.collected ?? v.bitsGained ?? v.pendingBits;
+          const g = v.collectedBits ?? v.collected;
           toast(`Collecté : ${g != null ? g + " bits" : "ok"}`);
         } else toast(r.message || r.code || "collecte refusée");
         loadTd(true);
       };
       $("tdRefresh").onclick = () => loadTd(true);
-      $("tdAuto").onchange = (e) => {
-        S.prefs = { ...(S.prefs || {}), autoTowerDefense: e.target.checked };
-        post("/api/account", { prefs: S.prefs });
-      };
-      // rafraîchit le compte à rebours du plafond quand l'onglet est visible
+      function tdPref(patch) {
+        S.prefs = { ...(S.prefs || {}), ...patch };
+        post("/api/account", { prefs: S.prefs }).then(() => loadTd(true));
+      }
+      $("tdAuto").onchange = (e) => tdPref({ autoTowerDefense: e.target.checked });
+      $("tdWaves").onchange = (e) => tdPref({ autoTowerDefenseWaves: e.target.checked });
+      $("tdUpgrade").onchange = (e) => tdPref({ autoTowerDefenseUpgrade: e.target.checked });
+      $("tdHorizon").onchange = (e) => tdPref({ tdHorizonDays: Math.max(1, +e.target.value || 45) });
+      $("tdKeep").onchange = (e) => tdPref({ tdKeepBits: Math.max(0, +e.target.value || 0) });
+      // compte à rebours chaque seconde, relecture toutes les 15 s quand l'onglet est visible
+      let tdTick = 0;
       setInterval(() => {
-        if (
-          S.td &&
-          document.querySelector('.tab[data-tab="loot"]').classList.contains("sel")
-        )
-          renderTd();
+        if (!document.querySelector('.tab[data-tab="loot"]').classList.contains("sel")) return;
+        if (S.td) renderTdLive();
+        if (++tdTick % 15 === 0 && !document.hidden) loadTd(false);
       }, 1000);
 
       // ------------------------------------------------------------------ Coffres, inventaire, outils de destruction
@@ -4482,6 +5002,8 @@ CODA</textarea
         $("sVandal").value = s.vandalThreshold ?? 12;
         $("lootAuto").checked = !!(S.prefs || {}).autoChests;
         $("tdAuto").checked = !!(S.prefs || {}).autoTowerDefense;
+        $("tdWaves").checked = !!(S.prefs || {}).autoTowerDefenseWaves;
+        $("tdUpgrade").checked = !!(S.prefs || {}).autoTowerDefenseUpgrade;
         loadLoot(false);
         loadTd(false);
         loadProjects();

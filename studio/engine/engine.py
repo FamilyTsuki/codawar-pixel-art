@@ -42,7 +42,7 @@ class Engine:
                            directory, self.cookies, settings, self.wallet, self.pacer)
         self.snapshotter = Snapshotter(self.boards, store)
         self.loot = LootService(client, store, self.journal, self.pacer)
-        self.td = TowerDefense(client, store, self.journal, settings)
+        self.td = TowerDefense(client, store, self.journal, settings, runtime)
 
     # -- tâches de fond
     def start(self):
@@ -54,6 +54,7 @@ class Engine:
         _spawn(self.snapshotter.loop)
         _spawn(self.loot.loop)
         _spawn(self.td.loop)
+        _spawn(self.td.wave_loop)
 
     def _persist_loop(self):
         while True:
@@ -79,7 +80,7 @@ class Engine:
     def persist(self):
         """Sauvegarde l'état d'exécution (compteurs, stats, carte de chaleur, journal)."""
         data = {**self.placer.counters(), "counts": self.placer.counts_runtime(),
-                **self.stats.to_runtime(), "logs": self.journal.entries()}
+                **self.stats.to_runtime(), **self.td.to_runtime(), "logs": self.journal.entries()}
         self.store.save_runtime(data)
 
     # -- actions

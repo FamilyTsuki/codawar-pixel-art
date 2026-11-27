@@ -49,6 +49,12 @@ INVITE_TTL = 7 * 24 * 3600   # durée de validité d'un lien d'invitation (s)
 LOOT_INTERVAL = 60        # vérification des coffres disponibles (s)
 TD_INTERVAL = 600         # vérification du Tower Defense pour collecter les bits (s)
 TD_CACHE_TTL = 20         # cache de l'état Tower Defense (s)
+TD_WAVE_FIRST_POLL = 15   # attente avant de demander la fin d'une vague (s)
+TD_WAVE_POLL = 3          # intervalle entre deux demandes de fin de vague (s)
+TD_WAVE_MAX_WAIT = 300    # abandon d'une vague qui ne se termine pas (s)
+TD_WAVE_GAP = 3           # pause entre deux vagues (s)
+TD_HORIZON_DAYS = 45      # un achat Tower Defense doit se rembourser en ce nombre de jours
+TD_WAVE_IDLE = 600        # pause quand il n'y a rien à jouer (plafond du jour atteint…) (s)
 LOOT_CACHE_TTL = 20       # cache de la page /coffres (s)
 # Outils de destruction : rayon du losange touché (napalm : zone aléatoire décidée par le serveur)
 DESTRUCTION_TOOLS = {"pickaxe": 0, "dynamite": 1, "bomb": 2, "napalm": None, "nuke": 5}
