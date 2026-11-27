@@ -651,7 +651,7 @@
       }
       .td-opt {
         display: grid;
-        grid-template-columns: 1fr auto auto;
+        grid-template-columns: 1fr auto auto auto;
         gap: 10px;
         align-items: center;
         font-size: 12px;
@@ -669,7 +669,8 @@
       .td-opt .roi.bad {
         color: var(--mute);
       }
-      .td-opt .cost {
+      .td-opt .cost,
+      .td-opt .pay {
         color: var(--mute);
         font-variant-numeric: tabular-nums;
       }
@@ -4762,9 +4763,19 @@ CODA</textarea
               .map((o) => {
                 const good = o.roi >= 1;
                 const pay = o.payback != null ? `remboursé en ${tdNum(o.payback)} j` : "aucun gain prévu";
+                const p = o.payback;
+                const payShort =
+                  p == null || !isFinite(p)
+                    ? "∞"
+                    : p < 1
+                      ? `${Math.max(1, Math.round(p * 24))} h`
+                      : p < 10
+                        ? `${tdNum(p, 1)} j`
+                        : `${tdNum(p)} j`;
                 return `<div class="td-opt" title="${pay} · +${tdNum(o.jalons, 2)} jalon">
                   <span>${escHtml(o.label)}</span>
                   <span class="cost">${tdNum(o.cost)} bits${o.affordable ? "" : " · épargne"}</span>
+                  <span class="pay" title="temps avant rentabilité">⏱ ${payShort}</span>
                   <span class="roi ${good ? "good" : "bad"}">×${tdNum(o.roi, 2)}</span></div>`;
               })
               .join("")
